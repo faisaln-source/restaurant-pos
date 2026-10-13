@@ -3,11 +3,7 @@
  * Handles JWT auth, token refresh, and base URL configuration.
  */
 
-const defaultApi = typeof window !== 'undefined' && window.location.hostname
-  ? `${window.location.protocol}//${window.location.hostname}:4000`
-  : 'http://localhost:4000';
-
-const API_BASE = (import.meta.env.VITE_API_URL || defaultApi).replace(/\/+$/, '').trim();
+const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '').trim();
 
 // ── Token storage (in-memory + localStorage for refresh) ──────────────────
 let accessToken: string | null = null;

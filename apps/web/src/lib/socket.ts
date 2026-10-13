@@ -5,8 +5,8 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { getAccessToken } from './api';
 
-const defaultSocketUrl = typeof window !== 'undefined' && window.location.hostname
-  ? `${window.location.protocol}//${window.location.hostname}:4000`
+const defaultSocketUrl = typeof window !== 'undefined'
+  ? window.location.origin
   : 'http://localhost:4000';
 
 const SOCKET_URL = (import.meta.env.VITE_API_URL || defaultSocketUrl).replace(/\/+$/, '').trim();
