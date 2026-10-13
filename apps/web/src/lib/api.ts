@@ -3,7 +3,7 @@
  * Handles JWT auth, token refresh, and base URL configuration.
  */
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:4000').replace(/\/+$/, '').trim();
 
 // ── Token storage (in-memory + localStorage for refresh) ──────────────────
 let accessToken: string | null = null;

@@ -5,7 +5,7 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { getAccessToken } from './api';
 
-const SOCKET_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+const SOCKET_URL = (import.meta.env.VITE_API_URL || 'http://localhost:4000').replace(/\/+$/, '').trim();
 
 let socket: Socket | null = null;
 

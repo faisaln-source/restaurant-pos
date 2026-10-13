@@ -4,6 +4,9 @@
   "private": true,
   "scripts": {
     "dev:api": "cd apps/api && npm run dev",
-    "dev:web": "cd apps/web && npm run dev"
+    "dev:web": "cd apps/web && npm run dev",
+    "build:api": "npm --prefix apps/api run build",
+    "start:api": "npm --prefix apps/api run start",
+    "build:web": "npm --prefix apps/web run build"
   }
 }
