@@ -1,0 +1,12 @@
+{
+  "preset": "ts-jest",
+  "testEnvironment": "node",
+  "roots": ["<rootDir>/src"],
+  "testMatch": ["**/__tests__/**/*.test.ts"],
+  "moduleNameMapper": {
+    "^@/(.*)$": "<rootDir>/src/$1"
+  },
+  "setupFilesAfterFramework": [],
+  "coverageDirectory": "coverage",
+  "collectCoverageFrom": ["src/**/*.ts", "!src/**/*.d.ts", "!src/prisma/seed.ts"]
+}

@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: restaurant-pos-api
+    runtime: node
+    rootDir: apps/api
+    buildCommand: npm install && npm run build
+    startCommand: npx prisma migrate deploy && npm run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: restaurant-pos-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: CORS_ORIGIN
+        sync: false
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RESTAURANT_UPI_ID
+        value: quickserve.pos@okaxis
+      - key: RESTAURANT_NAME
+        value: QuickServe POS & Dining
+
+databases:
+  - name: restaurant-pos-db
+    databaseName: restaurant_pos
+    user: pos_admin
+    plan: free
