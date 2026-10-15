@@ -4,10 +4,12 @@ services:
     runtime: node
     rootDir: apps/api
     buildCommand: npm install && npm run build
-    startCommand: npx prisma migrate deploy && npm run start
+    startCommand: npx prisma migrate deploy && node dist/prisma/seed.js ; npm run start
     envVars:
       - key: NODE_ENV
         value: production
+      - key: PORT
+        value: 10000
       - key: DATABASE_URL
         fromDatabase:
           name: restaurant-pos-db
@@ -16,12 +18,18 @@ services:
         generateValue: true
       - key: JWT_REFRESH_SECRET
         generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 8h
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 7d
       - key: CORS_ORIGIN
         sync: false
       - key: RAZORPAY_KEY_ID
-        sync: false
+        value: rzp_test_5173testkey
       - key: RAZORPAY_KEY_SECRET
-        sync: false
+        value: rzp_test_secret_demo123
+      - key: RAZORPAY_CURRENCY
+        value: INR
       - key: RESTAURANT_UPI_ID
         value: quickserve.pos@okaxis
       - key: RESTAURANT_NAME
