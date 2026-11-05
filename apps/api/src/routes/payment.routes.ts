@@ -18,5 +18,6 @@ router.get('/qr/:orderId/status', ctrl.checkQRPaymentStatus);
 router.post('/', ctrl.processPayment);
 router.get('/:id', ctrl.getPaymentById);
 router.post('/:id/refund', ctrl.refundPayment);
+router.post('/:id/settle-seats', ctrl.settleSeats);
 
 export default router;

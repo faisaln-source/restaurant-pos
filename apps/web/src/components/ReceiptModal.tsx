@@ -1,10 +1,13 @@
-import { Printer, Download, Receipt as ReceiptIcon } from 'lucide-react';
+import { useState } from 'react';
+import { Printer, MessageCircle, Receipt as ReceiptIcon } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import type { Order, Payment } from '../lib/types';
+import { shareOrderOnWhatsApp } from '../lib/kitchenTicket';
 
 interface Props {
   order: Order;
@@ -15,6 +18,16 @@ interface Props {
 export default function ReceiptModal({ order, payment, onClose }: Props) {
   const now = new Date();
   const orderDate = order.createdAt ? new Date(order.createdAt) : now;
+  const [phoneInput, setPhoneInput] = useState(false);
+  const [phone, setPhone] = useState('');
+
+  const handleShare = () => {
+    if (!phoneInput) { setPhoneInput(true); return; }
+    if (!phone.trim()) { setPhoneInput(false); return; }
+    shareOrderOnWhatsApp(order, phone.trim());
+    setPhoneInput(false);
+    setPhone('');
+  };
 
   const handlePrint = () => {
     const printWin = window.open('', '_blank', 'width=794,height=1123');
@@ -429,20 +442,44 @@ export default function ReceiptModal({ order, payment, onClose }: Props) {
         </div>
 
         {/* Modal Actions */}
-        <div className="p-4 pt-2 border-t border-border/50 flex gap-2">
-          <Button
-            variant="outline"
-            className="flex-1 gap-2 text-xs"
-            onClick={handleDownload}
-          >
-            <Download className="w-3.5 h-3.5" /> Download
-          </Button>
-          <Button
-            className="flex-1 gap-2 text-xs font-semibold"
-            onClick={handlePrint}
-          >
-            <Printer className="w-3.5 h-3.5" /> Print
-          </Button>
+        <div className="p-4 pt-2 border-t border-border/50 flex flex-col gap-2">
+          {phoneInput && (
+            <div className="flex gap-2">
+              <Input
+                autoFocus
+                type="tel"
+                placeholder="Customer WhatsApp number (e.g. 9876543210)"
+                value={phone}
+                onChange={e => setPhone(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleShare()}
+                className="flex-1 h-9 text-xs"
+              />
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-9 px-3 text-xs"
+                onClick={() => { setPhoneInput(false); setPhone(''); }}
+              >
+                Cancel
+              </Button>
+            </div>
+          )}
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              className="flex-1 gap-2 text-xs font-semibold bg-[#25D366]/10 border-[#25D366]/40 text-[#25D366] hover:bg-[#25D366]/20 hover:text-[#25D366]"
+              onClick={handleShare}
+            >
+              <MessageCircle className="w-3.5 h-3.5" />
+              {phoneInput ? 'Send to WhatsApp' : 'Share on WhatsApp'}
+            </Button>
+            <Button
+              className="flex-1 gap-2 text-xs font-semibold"
+              onClick={handlePrint}
+            >
+              <Printer className="w-3.5 h-3.5" /> Print
+            </Button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

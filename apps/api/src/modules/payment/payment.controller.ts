@@ -10,10 +10,11 @@ export async function processPayment(req: Request, res: Response) {
 
   const io = req.app.get('io');
   if (io) {
-    io.emit('payment:completed', data);
+    io.emit('payment:completed', data.payment);
     io.emit('order:statusChanged', { orderId: input.orderId, status: 'COMPLETED' });
-    if ((data as any).order?.tableId) {
-      io.emit('table:updated', { id: (data as any).order.tableId, status: 'AVAILABLE' });
+    // Only emit table:updated (AVAILABLE) if the table was actually freed
+    if (data.tableFreed && data.tableId) {
+      io.emit('table:updated', { id: data.tableId, status: 'AVAILABLE' });
     }
   }
 
@@ -51,6 +52,43 @@ export async function getTodayPayments(_req: Request, res: Response) {
 export async function refundPayment(req: Request, res: Response) {
   const data = await paymentService.refundPayment(param(req, 'id'));
   res.json({ success: true, data });
+}
+
+// ── Settle specific seats (partial billing) ───────────────────────────────────
+
+export async function settleSeats(req: Request, res: Response) {
+  const orderId = param(req, 'id');
+  const { seatNumbers, method, amount, tip, reference } = req.body;
+
+  if (!Array.isArray(seatNumbers) || seatNumbers.length === 0) {
+    return res.status(400).json({ success: false, message: 'seatNumbers array is required' });
+  }
+  if (!method || !amount) {
+    return res.status(400).json({ success: false, message: 'method and amount are required' });
+  }
+
+  const result = await paymentService.settleSeats({
+    orderId,
+    seatNumbers: seatNumbers.map(Number),
+    method,
+    amount: Number(amount),
+    tip: tip ? Number(tip) : 0,
+    reference: reference ?? null,
+  });
+
+  const io = req.app.get('io');
+  if (io) {
+    io.emit('payment:completed', result.payment);
+    if (result.allPaid) {
+      io.emit('order:statusChanged', { orderId, status: 'COMPLETED' });
+      // Emit table:updated only if the table was actually freed
+      if (result.tableFreed && result.tableId) {
+        io.emit('table:updated', { id: result.tableId, status: 'AVAILABLE' });
+      }
+    }
+  }
+
+  res.status(201).json({ success: true, data: result });
 }
 
 // ── Razorpay Endpoints ────────────────────────────────────────────────────────

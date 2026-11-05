@@ -14,5 +14,6 @@ router.post('/:id/items', ctrl.addItems);
 router.patch('/:id/status', ctrl.updateOrderStatus);
 router.patch('/:orderId/items/:itemId/status', ctrl.updateItemStatus);
 router.post('/:id/void', ctrl.voidOrder);
+router.patch('/:id/extra-charges', ctrl.updateExtraCharges);
 
 export default router;

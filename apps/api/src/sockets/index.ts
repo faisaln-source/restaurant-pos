@@ -22,6 +22,23 @@ export function registerSocketHandlers(io: Server) {
       }
     });
 
+    // Join a specific kitchen station room so that KDS screens
+    // only subscribed to one station receive targeted events.
+    socket.on('join:station', (stationId: string) => {
+      if (stationId) {
+        socket.join(`station:${stationId}`);
+        console.log(`[Socket] ${socket.id} joined station room: station:${stationId}`);
+      }
+    });
+
+    // Leave a specific kitchen station room (e.g. when switching stations)
+    socket.on('leave:station', (stationId: string) => {
+      if (stationId) {
+        socket.leave(`station:${stationId}`);
+        console.log(`[Socket] ${socket.id} left station room: station:${stationId}`);
+      }
+    });
+
     // Also auto-join both pos and kds by default for unified app experience
     socket.join('kds');
     socket.join('pos');

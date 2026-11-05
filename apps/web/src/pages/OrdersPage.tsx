@@ -4,7 +4,8 @@ import {
   Plus, Minus, Trash2, Search, Send, Receipt,
   ShoppingCart, UtensilsCrossed, Package, Bike,
   ChevronDown, History, Loader2, CreditCard, X, Check,
-  Clock, CheckCircle, AlertTriangle,
+  Clock, CheckCircle, AlertTriangle, Calendar,
+  Scissors, Users,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { fetchCategories, fetchMenuItems } from '../services/menu.service';
@@ -17,6 +18,8 @@ import { useAuthStore } from '../store/authStore';
 import { useSocketEvent } from '../lib/socket';
 import PaymentModal from '../components/PaymentModal';
 import ReceiptModal from '../components/ReceiptModal';
+import DailyPriceBoardModal from '../components/DailyPriceBoardModal';
+import { printSeatBill } from '../lib/kitchenTicket';
 import type { MenuCategory, MenuItem, Table, Order, OrderItem, Payment } from '../lib/types';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -57,6 +60,7 @@ interface CartItem {
   unitPrice: number;
   quantity: number;
   note?: string;
+  seatNumber?: number | null; // null = shared / unassigned
 }
 
 // ── Table Selector Dialog ────────────────────────────────────────────────────
@@ -112,7 +116,7 @@ function TableSelector({
                 : 'text-zinc-400 hover:text-white'
             }`}
           >
-            Occupied (Add to Bill) ({occupied.length})
+          Occupied (New Customer) ({occupied.length})
           </button>
         </div>
 
@@ -140,7 +144,7 @@ function TableSelector({
                     >
                       <span className="font-bold text-sm leading-tight">{t.name}</span>
                       <span className="text-[10px] opacity-80 leading-tight">
-                        {t.status === 'OCCUPIED' ? 'Add to Tab' : `${t.capacity} seats`}
+                      {t.status === 'OCCUPIED' ? 'New group' : `${t.capacity} seats`}
                       </span>
                     </Button>
                   ))}
@@ -234,9 +238,18 @@ function OrderHistorySheet({
                           </span>
                         )}
                         {o.status === 'SERVED' && (
-                          <span className="text-[11px] font-bold text-cyan-400 flex items-center gap-1.5 py-1">
-                            <Check size={12} /> Food Served to Table
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[11px] font-bold text-cyan-400 flex items-center gap-1.5 py-1">
+                              <Check size={12} /> Food Served
+                            </span>
+                            <Button
+                              size="sm"
+                              className="h-7 px-2.5 text-xs font-black bg-emerald-600 hover:bg-emerald-500 text-white gap-1 cursor-pointer rounded-lg"
+                              onClick={() => onPay(o)}
+                            >
+                              <CreditCard size={12} /> Settle Bill
+                            </Button>
+                          </div>
                         )}
                         <Button
                           variant="ghost"
@@ -260,6 +273,12 @@ function OrderHistorySheet({
   );
 }
 
+// ── Seat colors (shared by table-split section + cart badges) ───────────────
+const SEAT_COLORS = [
+  '#6366f1','#f59e0b','#10b981','#ef4444','#3b82f6',
+  '#a855f7','#ec4899','#14b8a6','#f97316',
+];
+
 // ── Main OrdersPage Component ───────────────────────────────────────────────
 export default function OrdersPage() {
   const { profile } = useAuthStore();
@@ -281,11 +300,59 @@ export default function OrdersPage() {
 
   const [showHistory, setShowHistory] = useState(false);
   const [showTableSelector, setShowTableSelector] = useState(false);
+  const [showDailyBoard, setShowDailyBoard] = useState(false);
   const [paymentOrder, setPaymentOrder] = useState<Order | null>(null);
   const [receiptOrder, setReceiptOrder] = useState<Order | null>(null);
   const [receiptPayment, setReceiptPayment] = useState<Payment | null>(null);
+  // selectedSeats: set of seat numbers claimed by THIS customer at this table.
+  // Empty = full table (no split). Non-empty = only those seats belong to this order.
+  const [selectedSeats, setSelectedSeats] = useState<Set<number>>(new Set());
 
-  // Track whether the table selector was opened mid-checkout so we can
+  // Toggle a seat in/out of the customer's claimed seats
+  const toggleSeat = (seat: number) => {
+    setSelectedSeats(prev => {
+      const next = new Set(prev);
+      if (next.has(seat)) next.delete(seat); else next.add(seat);
+      return next;
+    });
+  };
+
+  // Track previous seat count to detect 1→multi transition
+  const prevSeatsSizeRef = useRef(0);
+
+  // Seat auto-assignment rules:
+  //  • 0 seats selected  → clear all seat assignments (full-table mode)
+  //  • Exactly 1 seat    → auto-assign every cart item to that seat
+  //  • 1 → 2+ seats      → clear the stale single-seat auto-assignment so the
+  //                        user deliberately assigns each item via per-item picker
+  //  • Already multi     → don't touch existing manual assignments
+  useEffect(() => {
+    const prevSize = prevSeatsSizeRef.current;
+    prevSeatsSizeRef.current = selectedSeats.size;
+
+    if (selectedSeats.size === 0) {
+      clearSeatAssignments();
+    } else if (selectedSeats.size === 1) {
+      const seat = [...selectedSeats][0];
+      setCart(prev => prev.map(c => ({ ...c, seatNumber: seat })));
+    } else if (prevSize === 1) {
+      // Transitioning from single → multi: wipe the stale auto-assignment
+      // so no item is misleadingly locked to the first-clicked seat.
+      clearSeatAssignments();
+    }
+    // Already multi-seat and adding another seat: preserve existing manual assignments
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSeats]);
+
+  // Seat assignment: update a cart item's seatNumber
+  const assignSeat = (menuItemId: string, seat: number | null) => {
+    setCart(prev => prev.map(c => c.menuItemId === menuItemId ? { ...c, seatNumber: seat } : c));
+  };
+
+  // Clear seat assignments when split is disabled or table changes
+  const clearSeatAssignments = () => {
+    setCart(prev => prev.map(c => ({ ...c, seatNumber: null })));
+  };  // Track whether the table selector was opened mid-checkout so we can
   // auto-submit the order immediately after the user picks a table.
   const pendingSubmitRef = useRef<{ payImmediately: boolean } | null>(null);
 
@@ -319,13 +386,15 @@ export default function OrdersPage() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  useSocketEvent('order:new', () => { fetchTodayOrders().then(setTodayOrders); });
+  useSocketEvent('order:new', () => { fetchTodayOrders().then(setTodayOrders); fetchTables().then(setTables); });
   useSocketEvent('order:statusChanged', () => { fetchTodayOrders().then(setTodayOrders); });
+  useSocketEvent('payment:completed', () => { fetchTodayOrders().then(setTodayOrders); fetchTables().then(setTables); });
   useSocketEvent('table:updated', () => { fetchTables().then(setTables); });
   useSocketEvent('menu:updated', () => { fetchMenuItems().then(setItems); });
 
   const addToCart = (item: MenuItem) => {
     if (!item.isAvailable) { toast.error('Item is currently unavailable'); return; }
+    const unitPrice = item.effectivePrice ?? item.price;
     setCart(prev => {
       const idx = prev.findIndex(c => c.menuItemId === item.id);
       if (idx !== -1) {
@@ -333,7 +402,7 @@ export default function OrdersPage() {
         next[idx] = { ...next[idx], quantity: next[idx].quantity + 1 };
         return next;
       }
-      return [...prev, { menuItemId: item.id, name: item.name, unitPrice: item.price, quantity: 1 }];
+      return [...prev, { menuItemId: item.id, name: item.name, unitPrice, quantity: 1 }];
     });
   };
 
@@ -359,12 +428,25 @@ export default function OrdersPage() {
   const submitOrder = async (table: Table | null, payImmediately: boolean) => {
     setPlacing(true);
     try {
+      const seatList = [...selectedSeats].sort((a, b) => a - b);
+
+      // Build final items — if seats are selected but items have no seatNumber,
+      // distribute them round-robin across the selected seats so the billing
+      // badge reflects all claimed seats correctly.
+      const finalItems = cart.map((c, idx) => {
+        let seatNumber = c.seatNumber ?? null;
+        if (seatNumber === null && seatList.length > 0) {
+          seatNumber = seatList[idx % seatList.length];
+        }
+        return { menuItemId: c.menuItemId, quantity: c.quantity, note: c.note, seatNumber };
+      });
+
       const newOrder = await createOrder({
         type: orderType,
         tableId: table?.id,
         customerName: customerName.trim() || undefined,
         note: orderNote.trim() || undefined,
-        items: cart.map(c => ({ menuItemId: c.menuItemId, quantity: c.quantity, note: c.note })),
+        items: finalItems,
       });
 
       const tableLabel = table ? `Table ${table.name}` : orderType.replace('_', ' ');
@@ -378,6 +460,7 @@ export default function OrdersPage() {
       setSelectedTable(null);
       setCustomerName('');
       setOrderNote('');
+      setSelectedSeats(new Set());
       fetchTodayOrders().then(setTodayOrders);
       fetchTables().then(setTables);
 
@@ -405,10 +488,12 @@ export default function OrdersPage() {
   // Called when user picks a table from the dialog
   const handleTableSelect = (table: Table) => {
     setSelectedTable(table);
+    setSelectedSeats(new Set());
+    clearSeatAssignments();
+
     const pending = pendingSubmitRef.current;
     if (pending !== null) {
       pendingSubmitRef.current = null;
-      // Submit immediately with the just-selected table (state hasn't updated yet)
       submitOrder(table, pending.payImmediately);
     }
   };
@@ -494,8 +579,19 @@ export default function OrdersPage() {
           <Button
             variant="outline"
             size="sm"
+            onClick={() => setShowDailyBoard(true)}
+            className="h-11 shrink-0 text-xs sm:text-sm gap-2 font-bold px-3 rounded-xl border-border/80 bg-card/80 text-muted-foreground hover:text-foreground cursor-pointer"
+            title="View or update daily market rates"
+          >
+            <Calendar size={16} className="text-primary" />
+            <span className="hidden md:inline">Daily Rates</span>
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => setShowHistory(true)}
-            className="h-11 shrink-0 text-xs sm:text-sm gap-2 font-bold px-3.5 rounded-xl border-border/80 bg-card/80"
+            className="h-11 shrink-0 text-xs sm:text-sm gap-2 font-bold px-3.5 rounded-xl border-border/80 bg-card/80 cursor-pointer"
           >
             <History size={16} />
             <span className="hidden sm:inline">Orders</span>
@@ -625,9 +721,21 @@ export default function OrdersPage() {
                   {/* Bottom: Exact Price & Fast Waiter Add Action */}
                   <div className="flex items-center justify-between pt-2 border-t border-border/60 mt-auto" onClick={e => e.stopPropagation()}>
                     <div className="flex flex-col">
-                      <span className="text-base sm:text-lg font-black text-foreground font-mono leading-none">
-                        ₹{item.price.toFixed(2)}
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-base sm:text-lg font-black text-foreground font-mono leading-none">
+                          ₹{(item.effectivePrice ?? item.price).toFixed(2)}
+                        </span>
+                        {item.isVariablePrice && (
+                          <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 bg-amber-500/10 text-amber-400 border-amber-500/30 font-bold">
+                            Day Rate
+                          </Badge>
+                        )}
+                      </div>
+                      {item.isVariablePrice && (item.effectivePrice ?? item.price) !== item.price && (
+                        <span className="text-[10px] text-muted-foreground line-through font-mono mt-0.5">
+                          Reg ₹{item.price.toFixed(2)}
+                        </span>
+                      )}
                     </div>
 
                     {!isAvailable ? (
@@ -674,55 +782,167 @@ export default function OrdersPage() {
         </div>
       </div>
 
-      {/* Right Order / Cart Drawer - Dedicated Waiter Ticket Panel */}
       <Card className="w-full lg:w-[380px] xl:w-[420px] flex-shrink-0 flex flex-col h-[560px] lg:h-full border-border/80 bg-card/95 backdrop-blur-md overflow-hidden shadow-2xl rounded-2xl">
-        {/* Ticket Header & Table Assignment */}
+        {/* Billing Session Header */}
         <div className="p-4 border-b border-border/80 flex flex-col gap-3 bg-muted/20">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <UtensilsCrossed size={18} className="text-primary" />
-              <h3 className="font-extrabold text-base text-foreground">Table Order Ticket</h3>
+              <Receipt size={18} className="text-primary" />
+              <h3 className="font-extrabold text-base text-foreground">Billing Session</h3>
             </div>
-            {cart.length > 0 && (
-              <Badge variant="secondary" className="text-xs font-bold px-2 py-0.5">
-                {cart.reduce((s, c) => s + c.quantity, 0)} items
-              </Badge>
-            )}
-          </div>
-
-          {/* Dining Table Selector Button */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between text-xs font-bold text-muted-foreground uppercase tracking-wider">
-              <span>Assigned Table</span>
-              {selectedTable && (
-                <span className="text-primary font-black">{selectedTable.capacity} Seats</span>
+            <div className="flex items-center gap-2">
+              {cart.length > 0 && (
+                <Badge variant="secondary" className="text-xs font-bold px-2 py-0.5">
+                  {cart.reduce((s, c) => s + c.quantity, 0)} items
+                </Badge>
               )}
             </div>
-
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowTableSelector(true)}
-              className={`w-full justify-between h-12 text-sm font-black border-2 rounded-xl transition-all cursor-pointer ${
-                selectedTable
-                  ? 'border-primary/60 bg-primary/10 text-foreground hover:bg-primary/20'
-                  : 'border-dashed border-primary/50 bg-background text-primary hover:bg-primary/5'
-              }`}
-            >
-              <span className="flex items-center gap-2">
-                <span className="text-base">{selectedTable ? '🪑' : '➕'}</span>
-                <span>{selectedTable ? `Table ${selectedTable.name}` : 'Select Dining Table *'}</span>
-              </span>
-              <span className="text-xs font-semibold opacity-70 flex items-center gap-1">
-                {selectedTable ? 'Change' : 'Choose Table'}
-                <ChevronDown size={14} />
-              </span>
-            </Button>
           </div>
 
-          {/* Optional Guest Name / Party Note */}
+          {/* Order Type Selector */}
+          <div className="grid grid-cols-3 gap-1 p-1 bg-muted/40 rounded-xl border border-border/60">
+            {(['DINE_IN', 'TAKEAWAY', 'DELIVERY'] as OrderType[]).map(type => {
+              const cfg = ORDER_TYPE_CONFIG[type];
+              const Icon = cfg.icon;
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => {
+                    setOrderType(type);
+                    if (type !== 'DINE_IN') setSelectedTable(null);
+                  }}
+                  className={`flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    orderType === type
+                      ? 'bg-primary text-primary-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'
+                  }`}
+                >
+                  <Icon size={14} />
+                  {cfg.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Table Selector — only for Dine-In */}
+          {orderType === 'DINE_IN' && (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                <span>Assigned Table</span>
+                {selectedTable && (
+                  <span className="text-primary font-black">{selectedTable.capacity} Seats</span>
+                )}
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowTableSelector(true)}
+                className={`w-full justify-between h-11 text-sm font-black border-2 rounded-xl transition-all cursor-pointer ${
+                  selectedTable
+                    ? 'border-primary/60 bg-primary/10 text-foreground hover:bg-primary/20'
+                    : 'border-dashed border-primary/50 bg-background text-primary hover:bg-primary/5'
+                }`}
+              >
+                <span className="flex items-center gap-2">
+                  <span className="text-base">{selectedTable ? '🪑' : '➕'}</span>
+                  <span>{selectedTable ? `Table ${selectedTable.name}` : 'Select Dining Table'}</span>
+                </span>
+                <ChevronDown size={14} className="opacity-60" />
+              </Button>
+
+              {/* ── Seat Picker — pick which seats this customer occupies ── */}
+              {selectedTable && (() => {
+                const cap = selectedTable.capacity;
+                // Find which seats are already occupied by OTHER active orders on this table
+                const activeTableOrders = todayOrders.filter(o => o.tableId === selectedTable.id && !['COMPLETED', 'CANCELLED', 'VOIDED'].includes(o.status));
+                const occupiedByOthers = new Set<number>(
+                  activeTableOrders.flatMap(o => (o.items ?? []).map(i => i.seatNumber).filter((s): s is number => s != null))
+                );
+                const allSeats = Array.from({ length: cap }, (_, i) => i + 1);
+                const freeSeats = allSeats.filter(s => !occupiedByOthers.has(s));
+                const hasOccupied = occupiedByOthers.size > 0;
+                const isSplitMode = selectedSeats.size > 0;
+
+                return (
+                  <div className="space-y-2 px-1 pt-0.5">
+                    {/* Label row */}
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                        <Users size={12} /> Seat Assignment
+                      </span>
+                      {isSplitMode && (
+                        <button
+                          type="button"
+                          onClick={() => { setSelectedSeats(new Set()); clearSeatAssignments(); }}
+                          className="text-[10px] font-bold text-muted-foreground hover:text-foreground px-1.5 py-0.5 rounded border border-border/60 hover:bg-muted cursor-pointer transition-all"
+                        >✕ Clear</button>
+                      )}
+                    </div>
+
+                    {/* Occupied seats notice */}
+                    {hasOccupied && (
+                      <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-orange-500/10 border border-orange-500/25">
+                        <span className="text-[10px] font-bold text-orange-400">
+                          🔒 Seats {[...occupiedByOthers].sort((a,b)=>a-b).map(s=>`S${s}`).join(', ')} occupied by another group
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Only FREE seat pills */}
+                    {freeSeats.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {freeSeats.map(seat => {
+                          const isSelected = selectedSeats.has(seat);
+                          const color = SEAT_COLORS[(seat - 1) % SEAT_COLORS.length];
+                          return (
+                            <button
+                              key={seat}
+                              type="button"
+                              onClick={() => toggleSeat(seat)}
+                              title={isSelected ? `Seat ${seat} — click to deselect` : `Seat ${seat} — click to assign to this customer`}
+                              className={`h-9 w-9 rounded-xl text-sm font-black border-2 transition-all cursor-pointer select-none flex flex-col items-center justify-center gap-0 ${
+                                isSelected
+                                  ? 'text-white border-transparent shadow-md scale-105'
+                                  : 'border-border/50 text-muted-foreground hover:border-primary/60 hover:text-foreground hover:bg-muted/60'
+                              }`}
+                              style={isSelected ? { backgroundColor: color, borderColor: color } : {}}
+                            >
+                              {seat}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="text-[10px] font-bold text-red-400 px-1">
+                        ⚠ All seats occupied — no free seats available on this table.
+                      </div>
+                    )}
+
+                    {/* Status line */}
+                    <div className="text-[10px] text-muted-foreground">
+                      {isSplitMode ? (
+                        <span>
+                          <span className="text-primary font-bold">{selectedSeats.size} seat{selectedSeats.size > 1 ? 's' : ''}</span>
+                          {' '}assigned to this customer
+                        </span>
+                      ) : (
+                        <span>
+                          {hasOccupied
+                            ? 'Tap free seats above to assign to this new customer'
+                            : 'Tap seats to split by customer, or leave unselected for full-table billing'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
+          {/* Customer / Party name */}
           <Input
-            placeholder="Guest name / party info (Optional)..."
+            placeholder={orderType === 'DELIVERY' ? 'Customer name & delivery address...' : 'Guest name / party info (Optional)...'}
             value={customerName}
             onChange={e => setCustomerName(e.target.value)}
             className="h-9 text-xs bg-background/60 rounded-xl border-border/80"
@@ -748,10 +968,44 @@ export default function OrdersPage() {
                 className="flex items-center justify-between p-3 rounded-xl border border-border/70 bg-background/60 hover:bg-background/90 transition-colors shadow-2xs"
               >
                 <div className="min-w-0 flex-1 pr-3">
-                  <p className="text-sm font-bold text-foreground truncate">{item.name}</p>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <p className="text-sm font-bold text-foreground truncate">{item.name}</p>
+                    {item.seatNumber != null && (
+                      <span
+                        className="text-[10px] font-black px-1.5 py-0.5 rounded-md text-white shrink-0"
+                        style={{ backgroundColor: SEAT_COLORS[(item.seatNumber - 1) % SEAT_COLORS.length] }}
+                      >S{item.seatNumber}</span>
+                    )}
+                  </div>
                   <p className="text-sm font-black text-primary mt-0.5 font-mono">
                     ₹{(item.unitPrice * item.quantity).toFixed(2)}
                   </p>
+                  {/* Inline seat assignment — shown when seats are selected for this order */}
+                  {selectedSeats.size > 0 && (
+                    <div className="flex items-center gap-1 mt-1.5 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => assignSeat(item.menuItemId, null)}
+                        className={`h-5 px-1.5 rounded text-[9px] font-black border transition-all cursor-pointer ${
+                          item.seatNumber == null
+                            ? 'bg-muted border-border text-foreground'
+                            : 'border-border/40 text-muted-foreground hover:bg-muted'
+                        }`}
+                      >All</button>
+                      {[...selectedSeats].sort((a, b) => a - b).map(seat => (
+                        <button
+                          key={seat}
+                          type="button"
+                          onClick={() => assignSeat(item.menuItemId, item.seatNumber === seat ? null : seat)}
+                          className={`h-5 w-5 rounded text-[9px] font-black border transition-all cursor-pointer ${
+                            item.seatNumber === seat ? 'text-white border-transparent' : 'border-border/40 text-muted-foreground hover:bg-muted'
+                          }`}
+                          style={item.seatNumber === seat ? { backgroundColor: SEAT_COLORS[(seat - 1) % SEAT_COLORS.length] } : {}}
+                          title={`Seat ${seat}`}
+                        >{seat}</button>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">
@@ -789,7 +1043,44 @@ export default function OrdersPage() {
           )}
         </div>
 
-        {/* Footer: Kitchen instructions & Dispatch */}
+        {/* Per-seat summary strip — shown when seats are assigned */}
+        {selectedSeats.size > 0 && cart.some(c => c.seatNumber != null) && (() => {
+          const TAX = 0.05;
+          const assignedSeats = [...new Set(cart.map(c => c.seatNumber).filter((s): s is number => s != null))].sort((a,b) => a - b);
+          const restName = (() => { try { return (JSON.parse(localStorage.getItem('pos_settings') ?? '{}') as any).restaurantName ?? 'Restaurant'; } catch { return 'Restaurant'; } })();
+          return (
+            <div className="px-3.5 pb-2 pt-2 border-t border-border/60 space-y-1.5">
+              <p className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">Seat Breakdown</p>
+              <div className="flex flex-col gap-1">
+                {assignedSeats.map(seat => {
+                  const seatItems = cart.filter(c => c.seatNumber === seat);
+                  const sub = seatItems.reduce((s, c) => s + c.unitPrice * c.quantity, 0);
+                  const total = sub * (1 + TAX);
+                  const color = SEAT_COLORS[(seat - 1) % SEAT_COLORS.length];
+                  return (
+                    <div key={seat} className="flex items-center justify-between rounded-lg px-2.5 py-1.5 border" style={{ borderColor: color + '44', backgroundColor: color + '0d' }}>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-[11px] font-black shrink-0" style={{ color }}>Seat {seat}</span>
+                        <span className="text-[10px] text-muted-foreground truncate">{seatItems.map(i => `${i.name}×${i.quantity}`).join(', ')}</span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-[11px] font-black font-mono" style={{ color }}>₹{total.toFixed(2)}</span>
+                        <button
+                          type="button"
+                          onClick={() => printSeatBill({ items: seatItems, seatNumber: seat, tableName: selectedTable?.name, restName, sub, tax: sub * TAX, total })}
+                          className="h-5 px-1.5 rounded text-[9px] font-bold border border-border/60 text-muted-foreground hover:bg-muted cursor-pointer"
+                          title={`Print Seat ${seat} bill`}
+                        >🖨️</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Footer: Actions & Billing */}
         <div className="p-4 border-t border-border/80 bg-card/95 space-y-3">
           {cart.length > 0 && (
             <Input
@@ -802,7 +1093,7 @@ export default function OrdersPage() {
 
           <div className="flex items-center justify-between py-1">
             <span className="text-xs text-muted-foreground font-semibold">
-              {cart.reduce((s, c) => s + c.quantity, 0)} items on ticket
+              {cart.reduce((s, c) => s + c.quantity, 0)} items
             </span>
             <span className="text-xl sm:text-2xl font-black text-foreground font-mono">
               ₹{total.toFixed(2)}
@@ -821,36 +1112,67 @@ export default function OrdersPage() {
                 <Trash2 size={16} />
               </Button>
             )}
-            <Button
-              className="flex-1 h-12 font-black gap-2 text-sm rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/25 cursor-pointer min-w-0"
-              onClick={() => handlePlaceOrder(false)}
-              disabled={cart.length === 0 || placing}
-            >
-              {placing ? (
-                <>
-                  <Loader2 size={16} className="animate-spin shrink-0" />
-                  <span className="truncate">Sending to Kitchen...</span>
-                </>
-              ) : (
-                <div className="flex items-center justify-center gap-2 font-black text-sm">
-                  <Send size={16} />
-                  <span>Send Order to Kitchen</span>
-                </div>
-              )}
-            </Button>
+
+            {orderType === 'DINE_IN' ? (
+              /* Dine-In: Send to Kitchen is primary; Bill Now is secondary icon */
+              <>
+                <Button
+                  className="flex-1 h-12 font-black gap-2 text-sm rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/25 cursor-pointer min-w-0"
+                  onClick={() => handlePlaceOrder(false)}
+                  disabled={cart.length === 0 || placing}
+                >
+                  {placing ? (
+                    <><Loader2 size={16} className="animate-spin shrink-0" /><span className="truncate">Sending...</span></>
+                  ) : (
+                    <><Send size={16} /><span>Send to Kitchen</span></>
+                  )}
+                </Button>
+                <Button
+                  variant="outline"
+                  title="Place order & bill immediately (skip kitchen queue)"
+                  className="h-12 w-12 shrink-0 rounded-xl border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500 cursor-pointer"
+                  onClick={() => handlePlaceOrder(true)}
+                  disabled={cart.length === 0 || placing}
+                >
+                  <CreditCard size={16} />
+                </Button>
+              </>
+            ) : (
+              /* Takeaway / Delivery: Bill & Pay is the only action */
+              <Button
+                className="flex-1 h-12 font-black gap-2 text-sm rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/25 cursor-pointer"
+                onClick={() => handlePlaceOrder(true)}
+                disabled={cart.length === 0 || placing}
+              >
+                {placing ? (
+                  <><Loader2 size={16} className="animate-spin shrink-0" /><span>Processing...</span></>
+                ) : (
+                  <><CreditCard size={16} /><span>Bill & Pay Now</span></>
+                )}
+              </Button>
+            )}
           </div>
 
-          {selectedTable ? (
-            <p className="text-[11px] text-muted-foreground text-center font-medium">
-              🍳 KOT will be sent directly to the kitchen display for <strong>Table {selectedTable.name}</strong>.
-            </p>
-          ) : (
-            <p className="text-[11px] text-amber-500 text-center font-bold">
-              ⚠️ Please pick a dining table before sending order to kitchen.
-            </p>
-          )}
+          {/* Contextual help text */}
+          <p className="text-[11px] text-center font-medium">
+            {orderType === 'DINE_IN' && !selectedTable && (
+              <span className="text-amber-500 font-bold">⚠️ Pick a table before sending to kitchen.</span>
+            )}
+            {orderType === 'DINE_IN' && selectedTable && (
+              <span className="text-muted-foreground">🍳 KOT → Kitchen display for <strong>Table {selectedTable.name}</strong>. Use 💳 to bill immediately.</span>
+            )}
+            {orderType === 'TAKEAWAY' && (
+              <span className="text-muted-foreground">📦 Takeaway — collect payment at counter.</span>
+            )}
+            {orderType === 'DELIVERY' && (
+              <span className="text-muted-foreground">🛵 Delivery — collect on dispatch or pre-pay now.</span>
+            )}
+          </p>
         </div>
       </Card>
+
+      {/* Split Bill Dialog */}
+      {/* (replaced by inline split in table section) */}
 
       {/* Table Selector Dialog */}
       <TableSelector
@@ -888,6 +1210,13 @@ export default function OrdersPage() {
           onClose={() => { setReceiptOrder(null); setReceiptPayment(null); }}
         />
       )}
+
+      {/* Daily Price Board Modal */}
+      <DailyPriceBoardModal
+        open={showDailyBoard}
+        onClose={() => setShowDailyBoard(false)}
+        onPricesUpdated={() => fetchMenuItems().then(setItems).catch(console.error)}
+      />
     </div>
   );
 }

@@ -6,7 +6,6 @@ import {
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Table, TableBody, TableCell, TableHead,
   TableHeader, TableRow,
@@ -15,16 +14,17 @@ import { getOrdersForRange, computeSummary, type SummaryStats } from '../service
 import { getPaymentsForRange } from '../services/payment.service';
 import type { Order, Payment } from '../lib/types';
 
-type RangeKey = 'today' | '7d' | '30d' | '90d';
+/** Format a Date as YYYY-MM-DD for <input type="date"> */
+function toDateStr(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
 
-function getRange(key: RangeKey): [Date, Date] {
-  const to = new Date();
-  to.setHours(23, 59, 59, 999);
-  const from = new Date();
-  from.setHours(0, 0, 0, 0);
-  if (key === '7d') from.setDate(from.getDate() - 6);
-  else if (key === '30d') from.setDate(from.getDate() - 29);
-  else if (key === '90d') from.setDate(from.getDate() - 89);
+/** Parse a YYYY-MM-DD string to start/end of day Dates in LOCAL time (avoids UTC-shift bug) */
+function parseRange(fromStr: string, toStr: string): [Date, Date] {
+  const [fy, fm, fd] = fromStr.split('-').map(Number);
+  const [ty, tm, td] = toStr.split('-').map(Number);
+  const from = new Date(fy, fm - 1, fd, 0, 0, 0, 0);
+  const to   = new Date(ty, tm - 1, td, 23, 59, 59, 999);
   return [from, to];
 }
 
@@ -33,12 +33,14 @@ const TYPE_COLORS = { DINE_IN: '#6366f1', TAKEAWAY: '#f97316', DELIVERY: '#22c55
 const PAYMENT_COLORS = { CASH: '#22c55e', CARD: '#6366f1', UPI: '#f97316' };
 
 export default function ReportsPage() {
-  const [range, setRange] = useState<RangeKey>('today');
-  const [orders, setOrders] = useState<Order[]>([]);
+  const todayStr = toDateStr(new Date());
+  const [fromStr, setFromStr] = useState(todayStr);
+  const [toStr,   setToStr]   = useState(todayStr);
+  const [orders,   setOrders]   = useState<Order[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading,  setLoading]  = useState(true);
 
-  const [from, to] = useMemo(() => getRange(range), [range]);
+  const [from, to] = useMemo(() => parseRange(fromStr, toStr), [fromStr, toStr]);
 
   useEffect(() => {
     setLoading(true);
@@ -60,51 +62,89 @@ export default function ReportsPage() {
     [orders, payments, from, to]
   );
 
+  const spanDays = useMemo(() => {
+    // Use local-date arithmetic to avoid DST/UTC offset issues
+    const [fy, fm, fd] = fromStr.split('-').map(Number);
+    const [ty, tm, td] = toStr.split('-').map(Number);
+    const msPerDay = 86_400_000;
+    const fromMs = new Date(fy, fm - 1, fd).getTime();
+    const toMs   = new Date(ty, tm - 1, td).getTime();
+    return Math.round((toMs - fromMs) / msPerDay) + 1;
+  }, [fromStr, toStr]);
+
   const chartItems = useMemo(() => {
-    if (range === 'today') {
+    if (spanDays <= 1) {
+      // Single day → hourly breakdown
       return (summary.hourlyStats ?? []).map(h => ({
         id: `hour-${h.hour}`,
         label: h.label,
+        sublabel: '',
         revenue: h.revenue,
         orders: h.orders,
       }));
     }
 
-    if (range === '90d') {
-      // Aggregate into 12-13 weekly buckets for a clean, balanced chart
-      const weeklyMap = new Map<string, { label: string; revenue: number; orders: number }>();
-      const reversed = (summary.dailyStats ?? []).slice().reverse();
-      reversed.forEach((d, idx) => {
-        const weekNum = Math.floor(idx / 7) + 1;
-        const weekKey = `W${weekNum}`;
-        const dateObj = new Date(d.date);
-        const label = dateObj.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
-        if (!weeklyMap.has(weekKey)) {
-          weeklyMap.set(weekKey, { label, revenue: 0, orders: 0 });
-        }
-        const w = weeklyMap.get(weekKey)!;
-        w.revenue += d.revenue;
-        w.orders += d.orders;
-      });
-      return Array.from(weeklyMap.entries()).map(([id, val]) => ({
-        id,
-        label: val.label,
-        revenue: val.revenue,
-        orders: val.orders,
-      }));
+    if (spanDays > 90) {
+      // Long range → monthly buckets
+      const monthlyMap = new Map<string, { label: string; revenue: number; orders: number }>();
+      for (const d of (summary.dailyStats ?? [])) {
+        const [year, month] = d.date.split('-');
+        const key = `${year}-${month}`;
+        const dateObj = new Date(Number(year), Number(month) - 1, 1);
+        const label = dateObj.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' });
+        if (!monthlyMap.has(key)) monthlyMap.set(key, { label, revenue: 0, orders: 0 });
+        const m = monthlyMap.get(key)!;
+        m.revenue += d.revenue;
+        m.orders  += d.orders;
+      }
+      return Array.from(monthlyMap.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([id, val]) => ({ id, label: val.label, sublabel: '', revenue: val.revenue, orders: val.orders }));
     }
 
+    if (spanDays > 31) {
+      // Medium range → weekly buckets (group by ISO week)
+      const weeklyMap = new Map<string, { label: string; revenue: number; orders: number }>();
+      const sorted = (summary.dailyStats ?? []).slice().sort((a, b) => a.date.localeCompare(b.date));
+      for (const d of sorted) {
+        const dateObj = new Date(d.date + 'T12:00:00'); // noon avoids DST edge
+        // ISO week: Monday-aligned week number within the year
+        const dayOfWeek = (dateObj.getDay() + 6) % 7; // Mon=0 … Sun=6
+        const monday = new Date(dateObj);
+        monday.setDate(dateObj.getDate() - dayOfWeek);
+        const weekKey = monday.toISOString().slice(0, 10);
+        const label = monday.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+        if (!weeklyMap.has(weekKey)) weeklyMap.set(weekKey, { label, revenue: 0, orders: 0 });
+        const w = weeklyMap.get(weekKey)!;
+        w.revenue += d.revenue;
+        w.orders  += d.orders;
+      }
+      return Array.from(weeklyMap.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([id, val]) => ({ id, label: val.label, sublabel: '', revenue: val.revenue, orders: val.orders }));
+    }
+
+    // 2–31 days → daily
     return (summary.dailyStats ?? [])
       .slice()
-      .reverse()
-      .slice(range === '7d' ? -7 : -30)
+      .sort((a, b) => a.date.localeCompare(b.date))
       .map(d => ({
         id: d.date,
-        label: new Date(d.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
+        label: new Date(d.date + 'T12:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
+        sublabel: '',
         revenue: d.revenue,
         orders: d.orders,
       }));
-  }, [summary, range]);
+  }, [summary, spanDays]);
+
+  // Determine chart title based on grouping mode
+  const chartMode = spanDays <= 1 ? 'hour' : spanDays > 90 ? 'month' : spanDays > 31 ? 'week' : 'day';
+  const chartTitle = {
+    hour: 'Hourly Sales (Today)',
+    day: 'Revenue by Day',
+    week: 'Revenue by Week',
+    month: 'Revenue by Month',
+  }[chartMode];
 
   const maxChartRev = Math.max(...chartItems.map(d => Number(d.revenue) || 0), 1);
   const maxItemQty = (summary.topItems?.length ?? 0) > 0 ? (summary.topItems[0].qty || 1) : 1;
@@ -139,14 +179,32 @@ export default function ReportsPage() {
           </p>
         </div>
 
-        <Tabs value={range} onValueChange={v => setRange(v as RangeKey)}>
-          <TabsList className="bg-muted/60">
-            <TabsTrigger value="today" className="text-xs px-3">Today</TabsTrigger>
-            <TabsTrigger value="7d" className="text-xs px-3">7 Days</TabsTrigger>
-            <TabsTrigger value="30d" className="text-xs px-3">30 Days</TabsTrigger>
-            <TabsTrigger value="90d" className="text-xs px-3">90 Days</TabsTrigger>
-          </TabsList>
-        </Tabs>
+        {/* Date range picker */}
+        <div className="flex items-center gap-2 bg-muted/50 border border-border/60 rounded-xl px-3 py-2">
+          <Calendar className="w-4 h-4 text-muted-foreground shrink-0" />
+          <input
+            id="report-from"
+            type="date"
+            value={fromStr}
+            max={toStr}
+            onChange={e => {
+              if (e.target.value) setFromStr(e.target.value);
+            }}
+            className="bg-transparent text-sm font-medium text-foreground outline-none cursor-pointer [color-scheme:dark]"
+          />
+          <span className="text-muted-foreground text-xs font-semibold">→</span>
+          <input
+            id="report-to"
+            type="date"
+            value={toStr}
+            min={fromStr}
+            max={todayStr}
+            onChange={e => {
+              if (e.target.value) setToStr(e.target.value);
+            }}
+            className="bg-transparent text-sm font-medium text-foreground outline-none cursor-pointer [color-scheme:dark]"
+          />
+        </div>
       </div>
 
       {loading ? (
@@ -234,12 +292,12 @@ export default function ReportsPage() {
                 <div>
                   <CardTitle className="text-sm font-semibold flex items-center gap-2">
                     <BarChart3 className="w-4 h-4 text-primary" />
-                    {range === 'today' ? 'Hourly Sales (Today)' : 'Daily Revenue'}
+                    {chartTitle}
                   </CardTitle>
                   <p className="text-[11px] text-muted-foreground mt-0.5">
-                    {range === 'today'
+                    {spanDays <= 1
                       ? 'Distribution of order volume & revenue across business hours'
-                      : `Revenue tracked over selected ${range.toUpperCase()} period`}
+                      : `Revenue tracked: ${fromStr} → ${toStr}`}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -254,47 +312,81 @@ export default function ReportsPage() {
                     <BarChart3 className="w-8 h-8 opacity-30 mb-2" />
                     <p>No revenue data recorded for this period</p>
                   </div>
-                ) : (
-                  <div className="h-64 w-full pt-8 pb-2 px-2 flex flex-col justify-between">
-                    <div className="flex-1 flex items-end gap-1 sm:gap-2 w-full pb-1">
-                      {chartItems.map(d => {
-                        const heightPercent = maxChartRev > 0 ? Math.round((d.revenue / maxChartRev) * 100) : 0;
-                        const hasSales = d.revenue > 0;
-                        return (
-                          <div
-                            key={d.id}
-                            className="flex-1 min-w-[20px] sm:min-w-[26px] h-full flex flex-col items-center justify-end group relative"
-                          >
-                            {/* Hover Tooltip */}
-                            <div className="opacity-0 group-hover:opacity-100 transition-all duration-150 absolute top-0 bg-popover text-popover-foreground text-[11px] font-bold py-1 px-2.5 rounded-md shadow-xl border border-border whitespace-nowrap z-30 pointer-events-none scale-95 group-hover:scale-100">
-                              ₹{Number(d.revenue).toFixed(0)} ({d.orders} {d.orders === 1 ? 'order' : 'orders'})
-                            </div>
-
-                            {/* Bar Track & Fill */}
+                ) : (() => {
+                  const n = chartItems.length;
+                  // Show label every Nth bar so they never collide
+                  const labelEvery = n <= 16 ? 1 : n <= 32 ? 2 : n <= 52 ? 4 : 6;
+                  const barGap = n <= 20 ? 'gap-1 sm:gap-2' : n <= 40 ? 'gap-px' : 'gap-0';
+                  return (
+                    <div className="h-64 w-full flex flex-col pt-4 pb-0 px-1">
+                      {/* ── Bar area ── */}
+                      <div className={`flex-1 flex items-end ${barGap} w-full`}>
+                        {chartItems.map((d, idx) => {
+                          const heightPercent = maxChartRev > 0 ? Math.round((d.revenue / maxChartRev) * 100) : 0;
+                          const hasSales = d.revenue > 0;
+                          return (
                             <div
-                              title={`₹${Number(d.revenue).toFixed(0)} (${d.orders} ${d.orders === 1 ? 'order' : 'orders'})`}
-                              className="w-full max-w-[36px] h-full flex items-end bg-muted/20 hover:bg-muted/40 transition-colors rounded-t-md p-0.5 cursor-pointer"
+                              key={d.id}
+                              className="flex-1 h-full flex flex-col items-center group relative"
+                              style={{ minWidth: n > 60 ? '6px' : n > 30 ? '10px' : '18px' }}
                             >
-                              <div
-                                className={`w-full rounded-t-sm transition-all duration-500 ${
-                                  hasSales
-                                    ? 'bg-gradient-to-t from-orange-600 via-primary to-amber-400 shadow-sm shadow-orange-500/30'
-                                    : 'bg-zinc-800/30'
-                                }`}
-                                style={{ height: hasSales ? `${Math.max(12, heightPercent)}%` : '4px' }}
-                              />
-                            </div>
+                              {/* Hover Tooltip */}
+                              <div className="opacity-0 group-hover:opacity-100 transition-all duration-150 absolute -top-8 left-1/2 -translate-x-1/2 bg-popover text-popover-foreground text-[11px] font-bold py-1 px-2.5 rounded-md shadow-xl border border-border whitespace-nowrap z-30 pointer-events-none">
+                                {d.label}: ₹{Number(d.revenue).toFixed(0)} ({d.orders} {d.orders === 1 ? 'order' : 'orders'})
+                              </div>
 
-                            {/* Bottom Label */}
-                            <span className="text-[10px] text-muted-foreground whitespace-nowrap mt-2 group-hover:text-foreground transition-colors truncate max-w-full">
-                              {d.label}
-                            </span>
-                          </div>
-                        );
-                      })}
+                              {/* Bar Track — flex-1 so it fills up to the baseline */}
+                              <div
+                                title={`${d.label}: ₹${Number(d.revenue).toFixed(0)} (${d.orders} ${d.orders === 1 ? 'order' : 'orders'})`}
+                                className="flex-1 w-full flex items-end bg-muted/20 hover:bg-muted/40 transition-colors rounded-t-sm cursor-pointer"
+                              >
+                                <div
+                                  className={`w-full rounded-t-sm transition-all duration-300 ${
+                                    hasSales
+                                      ? 'bg-gradient-to-t from-orange-600 via-primary to-amber-400'
+                                      : 'bg-zinc-800/30'
+                                  }`}
+                                  style={{ height: hasSales ? `${Math.max(4, heightPercent)}%` : '3px' }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* ── Baseline rule ── */}
+                      <div className="w-full h-px bg-border/40 shrink-0" />
+
+                      {/* ── Label row — fixed height, labels perfectly under each bar ── */}
+                      <div className={`flex ${barGap} w-full shrink-0`} style={{ height: '20px' }}>
+                        {chartItems.map((d, idx) => {
+                          const showLabel = idx % labelEvery === 0;
+                          return (
+                            <div
+                              key={d.id}
+                              className="flex-1 flex items-start justify-center overflow-hidden"
+                              style={{ minWidth: n > 60 ? '6px' : n > 30 ? '10px' : '18px' }}
+                            >
+                              {showLabel && (
+                                <span className="text-[9px] text-muted-foreground/80 whitespace-nowrap leading-tight pt-1">
+                                  {d.label}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Bar count hint */}
+                      {n > 16 && (
+                        <p className="text-[10px] text-muted-foreground/50 text-right pr-1 shrink-0">
+                          {n} {chartMode === 'month' ? 'months' : chartMode === 'week' ? 'weeks' : chartMode === 'hour' ? 'hours' : 'days'} · hover for details
+                        </p>
+                      )}
                     </div>
-                  </div>
-                )}
+                  );
+
+                })()}
               </CardContent>
             </Card>
 

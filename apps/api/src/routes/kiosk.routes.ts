@@ -7,6 +7,8 @@ import { createOrderSchema } from '../modules/order/order.schema';
 
 const router = Router();
 
+import { calculateEffectiveItemPrice } from '../modules/menu/pricing.utils';
+
 // ── GET /api/kiosk/menu ────────────────────────────────────────────────────────
 // Public menu with categories and available dishes for customer self-ordering
 router.get('/menu', async (_req: Request, res: Response) => {
@@ -21,7 +23,15 @@ router.get('/menu', async (_req: Request, res: Response) => {
     },
   });
 
-  res.json({ success: true, data: categories });
+  const enriched = categories.map(cat => ({
+    ...cat,
+    items: cat.items.map(item => ({
+      ...item,
+      effectivePrice: calculateEffectiveItemPrice(item).toNumber(),
+    })),
+  }));
+
+  res.json({ success: true, data: enriched });
 });
 
 // ── GET /api/kiosk/tables ──────────────────────────────────────────────────────

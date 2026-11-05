@@ -86,6 +86,14 @@ export interface DailyStat {
   byPaymentMethod: { CASH: number; CARD: number; UPI: number };
 }
 
+/** Returns YYYY-MM-DD in LOCAL time (avoids UTC-midnight offset bugs for IST etc) */
+function toLocalDateStr(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 export function computeHourlyStats(orders: Order[] = []): HourlyStat[] {
   const hoursMap = new Map<number, { orders: number; revenue: number }>();
 
@@ -139,14 +147,14 @@ export function computeDailyStats(
     const end = new Date(to);
     end.setHours(23, 59, 59, 999);
     while (cur <= end) {
-      const dStr = cur.toISOString().split('T')[0];
+      const dStr = toLocalDateStr(cur);
       dayMap.set(dStr, { orders: [], revenue: 0 });
       cur.setDate(cur.getDate() + 1);
     }
   }
 
   for (const o of (orders ?? [])) {
-    const date = o.createdAt ? new Date(o.createdAt).toISOString().split('T')[0] : 'unknown';
+    const date = o.createdAt ? toLocalDateStr(new Date(o.createdAt)) : 'unknown';
     if (!dayMap.has(date)) dayMap.set(date, { orders: [], revenue: 0 });
     const entry = dayMap.get(date)!;
     entry.orders.push(o);

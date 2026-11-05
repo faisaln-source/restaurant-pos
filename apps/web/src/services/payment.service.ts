@@ -31,6 +31,27 @@ export async function processPayment(
   return payment.id;
 }
 
+/**
+ * Settle a specific set of seats on an order (partial billing).
+ * Returns { payment, allPaid } — allPaid=true means the order is now fully settled.
+ */
+export async function settleSeats(
+  orderId: string,
+  seatNumbers: number[],
+  method: 'CASH' | 'CARD' | 'UPI',
+  amount: number,
+  tip: number = 0,
+  reference?: string,
+): Promise<{ payment: Payment; allPaid: boolean }> {
+  return api.post(`/api/payments/${orderId}/settle-seats`, {
+    seatNumbers,
+    method,
+    amount,
+    tip,
+    reference: reference ?? null,
+  });
+}
+
 export async function getPaymentById(id: string): Promise<Payment | null> {
   try {
     const p = await api.get<Payment>(`/api/payments/${id}`);
@@ -68,74 +89,43 @@ export async function getPaymentsForRange(from: Date, to: Date): Promise<Payment
     to: to.toISOString(),
   });
   const payments = await api.get<Payment[]>(`/api/payments?${params}`);
-  return (payments ?? []).map(normalizePayment);
+  return payments.map(normalizePayment);
 }
 
-export async function refundPayment(id: string): Promise<void> {
-  await api.post(`/api/payments/${id}/refund`);
+export async function createRazorpayOrder(orderId: string, amount: number) {
+  return api.post<{
+    razorpayOrderId: string;
+    amount: number;
+    currency: string;
+    keyId: string;
+  }>('/api/payments/razorpay/order', { orderId, amount });
 }
 
-// ── Razorpay Gateway Methods ──────────────────────────────────────────────────
-
-export interface RazorpayOrderResponse {
-  razorpayOrderId: string;
-  amount: number;
-  currency: string;
-  keyId: string;
-  isMockMode: boolean;
-  orderNumber?: number;
-  warning?: string;
-}
-
-export async function getRazorpayConfig(): Promise<{ keyId: string; currency: string; isMockMode: boolean }> {
-  return api.get<{ keyId: string; currency: string; isMockMode: boolean }>('/api/payments/razorpay/config');
-}
-
-export async function createRazorpayOrder(orderId: string, amount: number): Promise<RazorpayOrderResponse> {
-  return api.post<RazorpayOrderResponse>('/api/payments/razorpay/order', {
-    orderId,
-    amount,
-  });
-}
-
-export async function verifyRazorpayPayment(payload: {
+export async function verifyRazorpayPayment(data: {
   orderId: string;
   razorpayOrderId: string;
   razorpayPaymentId: string;
   razorpaySignature: string;
-  method?: 'UPI' | 'CARD' | 'WALLET';
-}): Promise<Payment> {
-  const p = await api.post<Payment>('/api/payments/razorpay/verify', payload);
-  return normalizePayment(p);
+  method?: string;
+}) {
+  return api.post<Payment>('/api/payments/razorpay/verify', data);
 }
 
-// ── Dynamic UPI QR Code Methods ───────────────────────────────────────────────
+export async function getRazorpayConfig() {
+  return api.get<{ keyId: string; enabled: boolean }>('/api/payments/razorpay/config');
+}
 
 export interface DynamicQRResponse {
-  orderId: string;
-  orderNumber: number;
-  amount: number;
-  currency: string;
-  upiId: string;
-  restaurantName: string;
   upiPayload: string;
-  razorpayQrId: string | null;
-  razorpayQrImage: string | null;
+  upiId: string;
+  razorpayQrId?: string;
 }
 
-export async function generateDynamicQR(orderId: string, amount?: number): Promise<DynamicQRResponse> {
-  return api.post<DynamicQRResponse>('/api/payments/qr/generate', {
-    orderId,
-    amount,
-  });
+export async function generateDynamicQR(orderId: string, amount?: number) {
+  return api.post<DynamicQRResponse>('/api/payments/qr/generate', { orderId, amount });
 }
 
-export async function checkQRPaymentStatus(orderId: string, qrId?: string): Promise<{ paid: boolean; payment?: Payment }> {
-  const params = qrId ? `?qrId=${encodeURIComponent(qrId)}` : '';
-  const res = await api.get<{ paid: boolean; payment?: Payment }>(`/api/payments/qr/${orderId}/status${params}`);
-  if (res.payment) {
-    res.payment = normalizePayment(res.payment);
-  }
-  return res;
+export async function checkQRPaymentStatus(orderId: string, qrId?: string) {
+  const params = qrId ? `?qrId=${qrId}` : '';
+  return api.get<{ paid: boolean; payment?: Payment }>(`/api/payments/qr/${orderId}/status${params}`);
 }
-

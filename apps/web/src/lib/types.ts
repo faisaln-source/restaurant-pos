@@ -12,6 +12,18 @@ export interface UserProfile {
 }
 
 // ── Menu ───────────────────────────────────────────────────────────────────
+export interface KitchenStation {
+  id: string;
+  name: string;
+  description?: string;
+  color: string;
+  isActive: boolean;
+  displayOrder: number;
+  _count?: { menuItems: number };
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface MenuCategory {
   id: string;
   name: string;
@@ -30,6 +42,15 @@ export interface MenuItem {
   name: string;
   description?: string;
   price: number;
+  isVariablePrice?: boolean;
+  dailyPrice?: number | null;
+  dayPrices?: Record<string, number> | null;
+  dailyPriceDate?: string | null;
+  effectivePrice?: number;
+  todayDefaultPrice?: number;
+  isOverriddenToday?: boolean;
+  kitchenStationId?: string | null;
+  kitchenStation?: { id: string; name: string; color: string } | null;
   imageUrl?: string;
   isAvailable: boolean;
   isVeg: boolean;
@@ -58,11 +79,15 @@ export interface OrderItem {
   id: string;
   menuItemId: string;
   menuItemName: string;
+  kitchenStationId?: string | null;
   quantity: number;
   unitPrice: number;
   totalPrice: number;
   status: 'PENDING' | 'PREPARING' | 'READY' | 'SERVED' | 'CANCELLED';
   note?: string;
+  seatNumber?: number | null;
+  isPaid?: boolean;
+  paidAt?: string | null;
 }
 
 export interface Order {
@@ -81,6 +106,8 @@ export interface Order {
   taxRate: number;
   taxAmount: number;
   discountAmount: number;
+  extraCharges: number;
+  extraChargesDetail?: Array<{ label: string; amount: number; isPercent: boolean; originalRate: number }>;
   totalAmount: number;
   createdAt: string;
   updatedAt: string;

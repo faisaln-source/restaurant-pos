@@ -41,6 +41,20 @@ export function connectSocket(): Socket {
   return socket;
 }
 
+/** Join a specific kitchen station room to receive station-targeted events. */
+export function joinStationRoom(stationId: string): void {
+  if (socket?.connected) {
+    socket.emit('join:station', stationId);
+  }
+}
+
+/** Leave a specific kitchen station room (e.g. when switching stations). */
+export function leaveStationRoom(stationId: string): void {
+  if (socket?.connected) {
+    socket.emit('leave:station', stationId);
+  }
+}
+
 export function disconnectSocket(): void {
   if (socket) {
     socket.disconnect();

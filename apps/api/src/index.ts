@@ -21,6 +21,9 @@ import paymentRoutes from './routes/payment.routes';
 import staffRoutes from './routes/staff.routes';
 import reportRoutes from './routes/report.routes';
 import kioskRoutes from './routes/kiosk.routes';
+import sectionChargeRoutes from './routes/section-charge.routes';
+import kitchenStationRoutes from './routes/kitchen-station.routes';
+
 
 import { registerSocketHandlers } from './sockets';
 
@@ -103,6 +106,9 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/staff', staffRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/kiosk', kioskRoutes);
+app.use('/api/section-charges', sectionChargeRoutes);
+app.use('/api/kitchen-stations', kitchenStationRoutes);
+
 
 // ── Error Handlers ─────────────────────────────────────────────────────────
 app.use(notFound);

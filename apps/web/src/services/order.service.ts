@@ -9,6 +9,8 @@ function normalizeOrder(o: Order): Order {
   const subtotal       = Number((o as any).subtotal ?? o.totalAmount);
   const taxAmount      = Number((o as any).taxAmount ?? 0);
   const discountAmount = Number((o as any).discountAmount ?? 0);
+  const extraCharges   = Number((o as any).extraCharges ?? 0);
+  const extraChargesDetail = (o as any).extraChargesDetail ?? undefined;
   // taxRate may not be stored in DB; derive it from amounts if missing
   const taxRate = Number(
     (o as any).taxRate ??
@@ -23,9 +25,15 @@ function normalizeOrder(o: Order): Order {
     taxAmount,
     taxRate,
     discountAmount,
+    extraCharges,
+    extraChargesDetail,
     items: (o.items ?? []).map((i: any) => ({
       ...i,
       menuItemName: i.menuItem?.name ?? i.menuItemName ?? 'Dish Item',
+      // Ensure kitchenStationId is always available at the item level for KDS filtering
+      kitchenStationId: i.menuItem?.kitchenStationId ?? i.kitchenStationId ?? null,
+      seatNumber: i.seatNumber ?? null,
+      isPaid: Boolean(i.isPaid),
       unitPrice:  Number(i.unitPrice),
       totalPrice: Number(i.totalPrice),
     })),
@@ -47,6 +55,7 @@ export async function createOrder(data: {
     note?: string;
     menuItemName?: string;
     unitPrice?: number;
+    seatNumber?: number | null;
   }>;
   taxRate?: number;
 }): Promise<Order> {
@@ -60,6 +69,7 @@ export async function createOrder(data: {
       menuItemId: i.menuItemId,
       quantity: i.quantity,
       note: i.note,
+      seatNumber: i.seatNumber ?? null,
     })),
   });
   return normalizeOrder(order);
@@ -145,4 +155,13 @@ export function subscribeToTodayOrders(cb: (orders: Order[]) => void): () => voi
 // ── Void order ─────────────────────────────────────────────────────────────
 export async function voidOrder(id: string, _tableId?: string): Promise<void> {
   await api.post(`/api/orders/${id}/void`);
+}
+
+// ── Update extra charges for a session ────────────────────────────────────
+export async function updateExtraCharges(
+  orderId: string,
+  extraCharges: number,
+): Promise<Order> {
+  const order = await api.patch<Order>(`/api/orders/${orderId}/extra-charges`, { extraCharges });
+  return normalizeOrder(order);
 }

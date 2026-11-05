@@ -1,11 +1,12 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Plus, Pencil, Trash2, LayoutGrid, Map,
   Users, Database, CheckCircle, Clock, Sparkles, MoreHorizontal,
   Layers, Wand2, Receipt, ArrowRight, UtensilsCrossed, Calendar,
-  ShoppingBag, Check, CreditCard,
+  ShoppingBag, Check, CreditCard, PlusCircle,
 } from 'lucide-react';
+
 import toast from 'react-hot-toast';
 import {
   subscribeToTables, fetchTables, createTable, updateTable,
@@ -14,8 +15,11 @@ import {
 import {
   fetchOrdersByTable, fetchActiveOrders, subscribeToActiveOrders,
 } from '../services/order.service';
+import { updateExtraCharges } from '../services/order.service';
+
 import { getPaymentByOrderId } from '../services/payment.service';
 import { useSocketEvent } from '../lib/socket';
+import { printSeatBill } from '../lib/kitchenTicket';
 import PaymentModal from '../components/PaymentModal';
 import ReceiptModal from '../components/ReceiptModal';
 import type { Table, Order, Payment } from '../lib/types';
@@ -83,6 +87,12 @@ function calculateAutoLayout(tables: Table[], canvasWidth = 900) {
   return pos;
 }
 
+// ── Seat colors for visual badges ───────────────────────────────────────────
+const SEAT_COLORS = [
+  '#6366f1','#f59e0b','#10b981','#ef4444','#3b82f6',
+  '#a855f7','#ec4899','#14b8a6','#f97316',
+];
+
 // ── Table Orders Viewer Drawer (Sheet) ──────────────────────────────────────
 function TableOrdersSheet({
   open,
@@ -96,13 +106,22 @@ function TableOrdersSheet({
   table: Table | null;
   onClose: () => void;
   onStatusChange: (table: Table, status: TableStatus) => void;
-  onPayOrder: (order: Order) => void;
+  onPayOrder: (order: Order, seatInfo?: { seatNumbers: number[]; label: string; amount: number }) => void;
   onViewReceipt: (order: Order) => void;
 }) {
   const navigate = useNavigate();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<'active' | 'completed' | 'all'>('active');
+  const [editingExtra, setEditingExtra] = useState(false);
+  const [extraInput, setExtraInput] = useState('');
+  const [savingExtra, setSavingExtra] = useState(false);
+  const [selectedSeatsToPay, setSelectedSeatsToPay] = useState<number[]>([]);
+
+  useEffect(() => {
+    setSelectedSeatsToPay([]);
+  }, [open, table?.id]);
+
 
   useEffect(() => {
     if (open && table) {
@@ -124,6 +143,19 @@ function TableOrdersSheet({
     }
   }, [open, table]);
 
+  // Re-fetch orders when real-time events arrive while the sheet is open
+  const refreshOrders = useCallback(() => {
+    if (open && table) {
+      fetchOrdersByTable(table.id)
+        .then(setOrders)
+        .catch(console.error);
+    }
+  }, [open, table]);
+
+  useSocketEvent('order:new', refreshOrders);
+  useSocketEvent('order:statusChanged', refreshOrders);
+  useSocketEvent('payment:completed', refreshOrders);
+
   if (!table) return null;
 
   const cfg = STATUS_CONFIG[table.status as TableStatus] ?? STATUS_CONFIG.AVAILABLE;
@@ -142,6 +174,8 @@ function TableOrdersSheet({
   const allActiveItems = activeOrders.flatMap(o => o.items ?? []);
   const activeSubtotal = activeOrders.reduce((sum, o) => sum + (o.subtotal || o.totalAmount), 0);
   const activeTax = activeOrders.reduce((sum, o) => sum + (o.taxAmount || 0), 0);
+  const activeExtraCharges = activeOrders.reduce((sum, o) => sum + (o.extraCharges || 0), 0);
+  const grandTotal = activeSubtotal + activeTax + activeExtraCharges;
 
   const unifiedActiveOrder: Order | null = primaryActiveOrder ? {
     ...primaryActiveOrder,
@@ -154,6 +188,25 @@ function TableOrdersSheet({
   const handleNewOrder = () => {
     onClose();
     navigate('/orders', { state: { tableId: table.id } });
+  };
+
+  const handleSaveExtraCharges = async () => {
+    if (!primaryActiveOrder) return;
+    const val = parseFloat(extraInput);
+    if (isNaN(val) || val < 0) { toast.error('Enter a valid amount'); return; }
+    setSavingExtra(true);
+    try {
+      const updated = await updateExtraCharges(primaryActiveOrder.id, val);
+      // Refresh orders to reflect the new total
+      const refreshed = await import('../services/order.service').then(m => m.fetchOrdersByTable(table!.id));
+      setOrders(refreshed);
+      setEditingExtra(false);
+      toast.success(`Extra charges updated to ₹${val.toFixed(2)}`);
+    } catch {
+      toast.error('Failed to update extra charges');
+    } finally {
+      setSavingExtra(false);
+    }
   };
 
   return (
@@ -277,105 +330,8 @@ function TableOrdersSheet({
               <span className="text-xs font-medium">Fetching orders for {table.name}...</span>
             </div>
           ) : filter === 'active' ? (
-            /* ── Single Consolidated Table Bill ── */
-            unifiedActiveOrder ? (
-              <Card className="border-2 border-emerald-500/40 bg-card shadow-xl rounded-2xl overflow-hidden">
-                {/* Bill Header */}
-                <div className="flex items-center justify-between p-4 border-b border-border bg-emerald-500/5">
-                  <div className="flex items-center gap-2.5">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/20 text-emerald-400 font-mono font-black text-xs border border-emerald-500/30">
-                      #{unifiedActiveOrder.orderNumber}
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-black text-sm sm:text-base text-foreground">Table {table.name} Bill</span>
-                        <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-[10px] font-black uppercase">
-                          Active Tab
-                        </Badge>
-                      </div>
-                      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mt-0.5">
-                        <Clock className="h-3 w-3" />
-                        <span>{new Date(unifiedActiveOrder.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                        {unifiedActiveOrder.customerName && (
-                          <>
-                            <span>•</span>
-                            <span className="text-foreground font-bold">Guest: {unifiedActiveOrder.customerName}</span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-[10px] text-muted-foreground uppercase tracking-wider block font-bold">Total Bill</span>
-                    <span className="font-mono font-black text-emerald-400 text-base sm:text-lg leading-tight">₹{totalActiveBill.toFixed(2)}</span>
-                  </div>
-                </div>
-
-                {/* All Dishes in One Single Unified List */}
-                <div className="p-4 space-y-3">
-                  <p className="text-[11px] font-black uppercase tracking-wider text-muted-foreground flex items-center justify-between border-b border-border pb-2">
-                    <span>Ordered Dishes &amp; Drinks</span>
-                    <span>{allActiveItems.length} items</span>
-                  </p>
-
-                  <div className="space-y-2.5 divide-y divide-border max-h-[300px] overflow-y-auto pr-1">
-                    {allActiveItems.map((item, idx) => (
-                      <div key={item.id || idx} className="pt-2.5 first:pt-0 flex items-center justify-between text-xs">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-muted text-xs font-black text-primary shrink-0">
-                            {item.quantity}×
-                          </span>
-                          <div className="min-w-0">
-                            <span className="font-bold text-foreground truncate block text-sm">
-                              {item.menuItemName}
-                            </span>
-                            {item.note && (
-                              <span className="text-[10px] text-amber-400 block truncate">
-                                Note: {item.note}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 shrink-0">
-                          <span className="text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider bg-muted text-muted-foreground border border-border">
-                            {item.status}
-                          </span>
-                          <span className="font-mono font-black text-foreground text-sm">
-                            ₹{(item.totalPrice ?? item.unitPrice * item.quantity).toFixed(2)}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Single Consolidated Financial Breakdown */}
-                  <div className="pt-3 border-t border-border space-y-1.5 text-xs">
-                    <div className="flex justify-between text-muted-foreground">
-                      <span>Items Subtotal</span>
-                      <span className="font-mono text-foreground">₹{activeSubtotal.toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between text-muted-foreground">
-                      <span>GST / Restaurant Tax (5%)</span>
-                      <span className="font-mono text-foreground">₹{activeTax.toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between font-black text-foreground text-base pt-2 border-t border-border">
-                      <span>Total Due</span>
-                      <span className="font-mono text-emerald-400 text-lg">₹{totalActiveBill.toFixed(2)}</span>
-                    </div>
-                  </div>
-
-                  {/* Single Settle Action */}
-                  <Button
-                    size="lg"
-                    onClick={() => { onClose(); onPayOrder(unifiedActiveOrder); }}
-                    className="w-full mt-3 font-black text-sm bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white gap-2 rounded-2xl shadow-lg shadow-emerald-950/50 cursor-pointer h-12 uppercase tracking-wide active:scale-98 transition-all"
-                  >
-                    <CreditCard size={16} /> Settle Bill &amp; Free Table — ₹{totalActiveBill.toFixed(2)}
-                  </Button>
-                </div>
-              </Card>
-            ) : (
+            /* ── Per-Order Bill Cards — each customer group is a separate card ── */
+            activeOrders.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 text-center text-muted-foreground gap-3 border border-dashed border-border rounded-2xl p-8">
                 <div className="h-14 w-14 rounded-2xl bg-muted flex items-center justify-center text-2xl">
                   🍽️
@@ -393,6 +349,275 @@ function TableOrdersSheet({
                 >
                   <Plus size={14} /> Create Order for Table {table.name}
                 </Button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {activeOrders.map((order, orderIdx) => {
+                  const orderItems = order.items ?? [];
+                  const orderSub = order.subtotal || order.totalAmount;
+                  const orderTax = order.taxAmount || 0;
+                  const orderExtra = order.extraCharges || 0;
+                  const orderTotal = order.totalAmount || 0;
+                  // Effective tax rate from stored amounts (fallback 5%)
+                  const taxRate = orderSub > 0 ? orderTax / orderSub : 0.05;
+                  const seatNumbers = [...new Set(orderItems.map(i => i.seatNumber).filter((s): s is number => s != null))].sort((a, b) => a - b);
+                  const unpaidItems = orderItems.filter(i => !i.isPaid);
+                  const unpaidSub = unpaidItems.reduce((s, i) => s + (i.totalPrice ?? i.unitPrice * i.quantity), 0);
+                  const unpaidTotal = unpaidSub * (1 + taxRate) + (unpaidItems.length > 0 ? orderExtra : 0);
+                  const allPaid = orderItems.length > 0 && unpaidItems.length === 0;
+
+                  return (
+                    <Card key={order.id} className={`border-2 ${orderIdx === 0 ? 'border-emerald-500/40' : 'border-indigo-500/30'} bg-card shadow-xl rounded-2xl overflow-hidden`}>
+                      {/* Order Header */}
+                      <div className={`flex items-center justify-between p-4 border-b border-border ${orderIdx === 0 ? 'bg-emerald-500/5' : 'bg-indigo-500/5'}`}>
+                        <div className="flex items-center gap-2.5">
+                          <div className={`flex h-9 w-9 items-center justify-center rounded-xl font-mono font-black text-xs border ${orderIdx === 0 ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30'}`}>
+                            #{order.orderNumber}
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-black text-sm text-foreground">
+                                {order.customerName ? `${order.customerName}` : `Customer ${orderIdx + 1}`}
+                              </span>
+                              <Badge className={`text-[10px] font-black uppercase ${orderIdx === 0 ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30'}`}>
+                                {seatNumbers.length > 0 ? `Seats ${seatNumbers.map(s => `S${s}`).join(', ')}` : 'Full Table'}
+                              </Badge>
+                            </div>
+                            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mt-0.5">
+                              <Clock className="h-3 w-3" />
+                              <span>{new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-[10px] text-muted-foreground uppercase tracking-wider block font-bold">Due</span>
+                          <span className={`font-mono font-black text-base leading-tight ${orderIdx === 0 ? 'text-emerald-400' : 'text-indigo-400'}`}>
+                            ₹{allPaid ? '0.00' : unpaidTotal.toFixed(2)}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Order Items */}
+                      <div className="p-4 space-y-3">
+                        <p className="text-[11px] font-black uppercase tracking-wider text-muted-foreground flex items-center justify-between border-b border-border pb-2">
+                          <span>Items</span>
+                          <span>{orderItems.length} items</span>
+                        </p>
+
+                        <div className="space-y-2.5 divide-y divide-border max-h-[240px] overflow-y-auto pr-1">
+                          {orderItems.map((item, idx) => (
+                            <div key={item.id || idx} className="pt-2.5 first:pt-0 flex items-center justify-between text-xs">
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-muted text-xs font-black text-primary shrink-0">
+                                  {item.quantity}×
+                                </span>
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="font-bold text-foreground truncate block text-sm">
+                                      {item.menuItemName}
+                                    </span>
+                                    {item.seatNumber != null && (
+                                      <span
+                                        className="text-[9px] font-black px-1.5 py-0.5 rounded text-white shrink-0"
+                                        style={{ backgroundColor: SEAT_COLORS[(item.seatNumber - 1) % SEAT_COLORS.length] }}
+                                      >
+                                        S{item.seatNumber}
+                                      </span>
+                                    )}
+                                    {item.isPaid && (
+                                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                        ✓ PAID
+                                      </span>
+                                    )}
+                                  </div>
+                                  {item.note && (
+                                    <span className="text-[10px] text-amber-400 block truncate">
+                                      Note: {item.note}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className="text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider bg-muted text-muted-foreground border border-border">
+                                  {item.status}
+                                </span>
+                                <span className="font-mono font-black text-foreground text-sm">
+                                  ₹{(item.totalPrice ?? item.unitPrice * item.quantity).toFixed(2)}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Order Totals */}
+                        <div className="pt-3 border-t border-border space-y-1.5 text-xs">
+                          <div className="flex justify-between text-muted-foreground">
+                            <span>Subtotal</span>
+                            <span className="font-mono text-foreground">₹{orderSub.toFixed(2)}</span>
+                          </div>
+                          <div className="flex justify-between text-muted-foreground">
+                            <span>GST (5%)</span>
+                            <span className="font-mono text-foreground">₹{orderTax.toFixed(2)}</span>
+                          </div>
+                          {orderExtra > 0 && (
+                            <div className="flex justify-between text-muted-foreground">
+                              <span>Extra Charges</span>
+                              <span className="font-mono text-amber-400 font-bold">₹{orderExtra.toFixed(2)}</span>
+                            </div>
+                          )}
+                          <div className="flex justify-between font-black text-foreground text-sm pt-2 border-t border-border">
+                            <span>Total</span>
+                            <span className="font-mono text-emerald-400">₹{orderTotal.toFixed(2)}</span>
+                          </div>
+                        </div>
+
+                        {/* Split Bill by Seat within this order */}
+                        {seatNumbers.length > 0 && (() => {
+                          return (
+                            <div className="pt-3 border-t border-border space-y-2">
+                              <span className="text-[11px] font-black uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                                <span>🪑</span> Split Bill by Seat
+                              </span>
+                              <div className="space-y-1.5">
+                                {seatNumbers.map(seat => {
+                                  const seatItems = orderItems.filter(i => i.seatNumber === seat);
+                                  const seatUnpaidItems = seatItems.filter(i => !i.isPaid);
+                                  const seatSub = seatItems.reduce((s, i) => s + (i.totalPrice ?? i.unitPrice * i.quantity), 0);
+                                  const seatUnpaidSub = seatUnpaidItems.reduce((s, i) => s + (i.totalPrice ?? i.unitPrice * i.quantity), 0);
+                                  const seatTotal = seatSub * (1 + taxRate);
+                                  const seatUnpaidTotal = seatUnpaidSub * (1 + taxRate);
+                                  const isSeatPaid = seatItems.length > 0 && seatUnpaidItems.length === 0;
+                                  const color = SEAT_COLORS[(seat - 1) % SEAT_COLORS.length];
+                                  const isSelected = selectedSeatsToPay.includes(seat);
+
+                                  return (
+                                    <div
+                                      key={seat}
+                                      className={`flex items-center justify-between p-2.5 rounded-xl border transition-all ${
+                                        isSeatPaid
+                                          ? 'bg-emerald-500/5 border-emerald-500/20 opacity-80'
+                                          : isSelected
+                                          ? 'bg-primary/10 border-primary/50 ring-1 ring-primary/40'
+                                          : 'bg-muted/20 border-border/60 hover:bg-muted/40'
+                                      }`}
+                                    >
+                                      <div className="flex items-center gap-2.5 min-w-0">
+                                        {!isSeatPaid && (
+                                          <input
+                                            type="checkbox"
+                                            checked={isSelected}
+                                            onChange={(e) => {
+                                              if (e.target.checked) {
+                                                setSelectedSeatsToPay(prev => [...prev, seat]);
+                                              } else {
+                                                setSelectedSeatsToPay(prev => prev.filter(s => s !== seat));
+                                              }
+                                            }}
+                                            className="rounded border-border text-primary cursor-pointer h-4 w-4"
+                                          />
+                                        )}
+                                        <div>
+                                          <div className="flex items-center gap-1.5">
+                                            <span className="text-xs font-black" style={{ color }}>Seat {seat}</span>
+                                            {isSeatPaid ? (
+                                              <span className="text-[9px] font-bold px-1.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">✓ PAID</span>
+                                            ) : (
+                                              <span className="text-[10px] text-muted-foreground">{seatItems.length} item{seatItems.length > 1 ? 's' : ''}</span>
+                                            )}
+                                          </div>
+                                          <div className="text-[10px] text-muted-foreground truncate max-w-[170px]">
+                                            {seatItems.map(i => `${i.menuItemName}×${i.quantity}`).join(', ')}
+                                          </div>
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-1.5 shrink-0">
+                                        <span className="font-mono font-black text-xs mr-1" style={{ color: isSeatPaid ? '#10b981' : undefined }}>
+                                          ₹{isSeatPaid ? seatTotal.toFixed(2) : seatUnpaidTotal.toFixed(2)}
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const restName = (() => { try { return (JSON.parse(localStorage.getItem('pos_settings') ?? '{}') as any).restaurantName ?? 'Restaurant'; } catch { return 'Restaurant'; } })();
+                                            printSeatBill({
+                                              items: seatItems.map(i => ({ menuItemId: i.menuItemId, name: i.menuItemName, unitPrice: i.unitPrice, quantity: i.quantity })),
+                                              seatNumber: seat,
+                                              tableName: table.name,
+                                              restName,
+                                              sub: seatSub,
+                                              tax: seatSub * 0.05,
+                                              total: seatTotal,
+                                            });
+                                          }}
+                                          className="h-6 px-2 rounded-lg text-[10px] font-bold border border-border/60 hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer flex items-center gap-1"
+                                        >
+                                          🖨️
+                                        </button>
+                                        {!isSeatPaid && (
+                                          <Button
+                                            size="sm"
+                                            onClick={() => {
+                                              onClose();
+                                              onPayOrder(order, {
+                                                seatNumbers: [seat],
+                                                label: `Seat ${seat}`,
+                                                amount: seatUnpaidTotal,
+                                              });
+                                            }}
+                                            className="h-6 px-2 text-[10px] font-black bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg cursor-pointer"
+                                          >
+                                            💳 Settle
+                                          </Button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+
+                              {/* Multi-seat settle */}
+                              {selectedSeatsToPay.length > 1 && (() => {
+                                const selItems = orderItems.filter(i => selectedSeatsToPay.includes(i.seatNumber!) && !i.isPaid);
+                                const selSub = selItems.reduce((s, i) => s + (i.totalPrice ?? i.unitPrice * i.quantity), 0);
+                                const selTotal = selSub * 1.05;
+                                return (
+                                  <Button
+                                    size="sm"
+                                    onClick={() => {
+                                      onClose();
+                                      onPayOrder(order, {
+                                        seatNumbers: selectedSeatsToPay,
+                                        label: `Seats ${selectedSeatsToPay.join(', ')}`,
+                                        amount: selTotal,
+                                      });
+                                    }}
+                                    className="w-full h-9 font-black text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl shadow-md cursor-pointer flex items-center justify-center gap-2 transition-all animate-in zoom-in-95"
+                                  >
+                                    <CreditCard size={14} /> Settle Selected ({selectedSeatsToPay.map(s => `S${s}`).join(', ')}) — ₹{selTotal.toFixed(2)}
+                                  </Button>
+                                );
+                              })()}
+                            </div>
+                          );
+                        })()}
+
+                        {/* Settle this order */}
+                        {allPaid ? (
+                          <div className="p-3 mt-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-bold text-center flex items-center justify-center gap-2">
+                            <Check size={16} /> Fully Settled
+                          </div>
+                        ) : (
+                          <Button
+                            size="lg"
+                            onClick={() => { onClose(); onPayOrder(order); }}
+                            className="w-full mt-3 font-black text-sm bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white gap-2 rounded-2xl shadow-lg cursor-pointer h-12 uppercase tracking-wide active:scale-98 transition-all"
+                          >
+                            <CreditCard size={16} /> Settle {order.customerName || `Order #${order.orderNumber}`} — ₹{unpaidTotal.toFixed(2)}
+                          </Button>
+                        )}
+                      </div>
+                    </Card>
+                  );
+                })}
               </div>
             )
           ) : filteredOrders.length === 0 ? (
@@ -487,14 +712,6 @@ function TableOrdersSheet({
           >
             Close
           </Button>
-          {unifiedActiveOrder && (
-            <Button
-              onClick={() => { onClose(); onPayOrder(unifiedActiveOrder); }}
-              className="flex-1 rounded-xl text-xs font-black bg-emerald-600 hover:bg-emerald-500 text-white gap-1.5 shadow-md shadow-emerald-900/30 cursor-pointer h-10"
-            >
-              <CreditCard size={14} /> Settle Bill (₹{totalActiveBill.toFixed(2)})
-            </Button>
-          )}
           <Button
             onClick={handleNewOrder}
             className="flex-1 rounded-xl text-xs font-bold bg-primary hover:bg-primary/90 text-primary-foreground gap-1.5 shadow-md shadow-orange-500/25 cursor-pointer"
@@ -1340,11 +1557,13 @@ export default function TablesPage() {
   };
 
   const [paymentOrder, setPaymentOrder] = useState<Order | null>(null);
+  const [paymentSeatInfo, setPaymentSeatInfo] = useState<{ seatNumbers: number[]; label: string; amount: number } | null>(null);
   const [receiptOrder, setReceiptOrder] = useState<Order | null>(null);
   const [receiptPayment, setReceiptPayment] = useState<Payment | null>(null);
 
-  const handlePayOrder = (order: Order) => {
+  const handlePayOrder = (order: Order, seatInfo?: { seatNumbers: number[]; label: string; amount: number }) => {
     setPaymentOrder(order);
+    setPaymentSeatInfo(seatInfo ?? null);
   };
 
   const handlePaymentSuccess = async (paymentId?: string) => {
@@ -1373,20 +1592,20 @@ export default function TablesPage() {
       {/* Stats row with Card components */}
       <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-5">
         {[
-          { label: 'Total Tables', value: stats.total, color: 'text-foreground', bg: 'bg-muted/40' },
-          { label: 'Available',    value: stats.available, color: 'text-emerald-400', bg: 'bg-emerald-500/15 ring-1 ring-emerald-500/25' },
-          { label: 'Occupied',     value: stats.occupied,  color: 'text-orange-400',  bg: 'bg-orange-500/15 ring-1 ring-orange-500/25' },
-          { label: 'Reserved',     value: stats.reserved,  color: 'text-indigo-400',  bg: 'bg-indigo-500/15 ring-1 ring-indigo-500/25' },
-          { label: 'Cleaning',     value: stats.cleaning,  color: 'text-amber-400',   bg: 'bg-amber-500/15 ring-1 ring-amber-500/25' },
+          { label: 'Total Tables', value: stats.total,     textColor: '#38bdf8', ringColor: 'rgba(14,165,233,0.15)', dotHex: '#38bdf8' },
+          { label: 'Available',    value: stats.available, textColor: '#34d399', ringColor: 'rgba(16,185,129,0.15)', dotHex: '#34d399' },
+          { label: 'Occupied',     value: stats.occupied,  textColor: '#fb923c', ringColor: 'rgba(249,115,22,0.15)',  dotHex: '#fb923c' },
+          { label: 'Reserved',     value: stats.reserved,  textColor: '#818cf8', ringColor: 'rgba(99,102,241,0.15)', dotHex: '#818cf8' },
+          { label: 'Cleaning',     value: stats.cleaning,  textColor: '#fbbf24', ringColor: 'rgba(245,158,11,0.15)', dotHex: '#fbbf24' },
         ].map(s => (
           <Card key={s.label} className="border-border/80 bg-card/90 shadow-sm">
             <CardContent className="p-4 sm:p-5 flex items-center justify-between">
               <div>
                 <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">{s.label}</span>
-                <p className={`text-2xl sm:text-3xl font-black tracking-tight mt-0.5 ${s.color}`}>{s.value}</p>
+                <p className="text-2xl sm:text-3xl font-black tracking-tight mt-0.5" style={{ color: s.textColor }}>{s.value}</p>
               </div>
-              <div className={`h-11 w-11 rounded-xl flex items-center justify-center ${s.bg}`}>
-                <span className={`h-3 w-3 rounded-full ${s.color.replace('text-', 'bg-')}`} />
+              <div className="h-11 w-11 rounded-xl flex items-center justify-center" style={{ backgroundColor: s.ringColor, boxShadow: `0 0 0 1px ${s.dotHex}40` }}>
+                <span className="h-3.5 w-3.5 rounded-full" style={{ backgroundColor: s.dotHex }} />
               </div>
             </CardContent>
           </Card>
@@ -1478,7 +1697,10 @@ export default function TablesPage() {
       {paymentOrder && (
         <PaymentModal
           order={paymentOrder}
-          onClose={() => setPaymentOrder(null)}
+          overrideAmount={paymentSeatInfo?.amount}
+          seatLabel={paymentSeatInfo?.label}
+          seatNumbers={paymentSeatInfo?.seatNumbers}
+          onClose={() => { setPaymentOrder(null); setPaymentSeatInfo(null); }}
           onSuccess={handlePaymentSuccess}
         />
       )}

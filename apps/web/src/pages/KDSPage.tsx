@@ -1,338 +1,496 @@
-import { useState, useEffect } from 'react';
-import { Clock, CheckCircle, ChefHat, AlertTriangle, RefreshCw, Flame, Check } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  Printer, Clock, RefreshCw, CheckCircle2, ReceiptText,
+  ChefHat, Flame, AlertTriangle, Package, Bike, UtensilsCrossed,
+  ChevronDown, Layers,
+} from 'lucide-react';
 import toast from 'react-hot-toast';
-import { Card, CardHeader, CardTitle, CardContent, CardFooter } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { fetchActiveOrders, updateOrderItemStatus, updateOrderStatus } from '../services/order.service';
-import { useSocketEvent } from '../lib/socket';
-import type { Order, OrderItem } from '../lib/types';
+import { Badge } from '@/components/ui/badge';
+import { fetchActiveOrders } from '../services/order.service';
+import { fetchKitchenStations, fetchStationOrders } from '../services/kitchen-station.service';
+import { useSocketEvent, joinStationRoom, leaveStationRoom } from '../lib/socket';
+import { printKitchenTicket } from '../lib/kitchenTicket';
+import type { Order, KitchenStation } from '../lib/types';
 
-function playKitchenChime() {
-  try {
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
-    osc.frequency.setValueAtTime(880, ctx.currentTime + 0.15); // A5
-    gain.gain.setValueAtTime(0.25, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.6);
-  } catch {
-    // Audio context may be suspended before user gesture
-  }
+/** Normalize a raw socket/API order payload to the client Order shape */
+function normalizeSocketOrder(raw: any): Order {
+  return {
+    ...raw,
+    tableName:      raw.table?.name ?? raw.tableName ?? undefined,
+    userName:       raw.user?.name ?? raw.userName ?? '',
+    totalAmount:    Number(raw.totalAmount ?? 0),
+    subtotal:       Number(raw.subtotal ?? raw.totalAmount ?? 0),
+    taxAmount:      Number(raw.taxAmount ?? 0),
+    taxRate:        Number(raw.taxRate ?? 5),
+    discountAmount: Number(raw.discountAmount ?? 0),
+    items: (raw.items ?? []).map((i: any) => ({
+      ...i,
+      menuItemName:      i.menuItem?.name ?? i.menuItemName ?? 'Item',
+      kitchenStationId:  i.menuItem?.kitchenStationId ?? i.kitchenStationId ?? null,
+      unitPrice:    Number(i.unitPrice ?? 0),
+      totalPrice:   Number(i.totalPrice ?? 0),
+    })),
+  };
 }
 
-const ITEM_STATUS_CONFIG = {
-  PENDING:   { label: 'Pending',   variant: 'outline' as const, bg: 'bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/25', next: 'PREPARING' as const, nextLabel: 'Start', nextVariant: 'default' as const },
-  PREPARING: { label: 'Preparing', variant: 'secondary' as const, bg: 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-400 border-indigo-500/25', next: 'READY'     as const, nextLabel: 'Ready!', nextVariant: 'default' as const },
-  READY:     { label: 'Ready',     variant: 'default' as const, bg: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/25', next: 'SERVED'    as const, nextLabel: 'Served', nextVariant: 'secondary' as const },
-  SERVED:    { label: 'Served',    variant: 'secondary' as const, bg: 'bg-slate-500/10 text-slate-600 dark:text-slate-400 border-slate-500/25', next: null, nextLabel: '', nextVariant: 'secondary' as const },
-  CANCELLED: { label: 'Cancelled', variant: 'destructive' as const, bg: 'bg-rose-500/10 text-rose-700 dark:text-rose-400 border-rose-500/25', next: null, nextLabel: '', nextVariant: 'secondary' as const },
-};
+// ── helpers ──────────────────────────────────────────────────────────────────
+function formatTime(iso: string | null | undefined): string {
+  if (!iso) return '';
+  return new Date(iso).toLocaleTimeString('en-IN', {
+    hour: '2-digit', minute: '2-digit', hour12: true,
+  });
+}
 
-function elapsed(createdAt: string | null | undefined): string {
-  if (!createdAt) return '';
-  const secs = Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000);
-  if (secs < 60) return `${secs}s`;
+function elapsed(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (secs < 60) return `${secs}s ago`;
   const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m`;
-  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+  if (mins < 60) return `${mins}m ago`;
+  return `${Math.floor(mins / 60)}h ${mins % 60}m ago`;
 }
 
-// ── KDS Order Card ──────────────────────────────────────────────────────────
-function KDSCard({ order, onRefresh }: { order: Order; onRefresh?: () => void }) {
+function orderTypeIcon(type: string) {
+  if (type === 'DINE_IN')  return <UtensilsCrossed className="w-3.5 h-3.5" />;
+  if (type === 'TAKEAWAY') return <Package className="w-3.5 h-3.5" />;
+  if (type === 'DELIVERY') return <Bike className="w-3.5 h-3.5" />;
+  return null;
+}
+
+function orderTypeLabel(type: string) {
+  return ({ DINE_IN: 'Dine In', TAKEAWAY: 'Takeaway', DELIVERY: 'Delivery' }[type] ?? type);
+}
+
+function playChime() {
+  try {
+    const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    [587.33, 880, 1174.66].forEach((freq, i) => {
+      const osc  = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, ctx.currentTime + i * 0.18);
+      gain.gain.setValueAtTime(0.22, ctx.currentTime + i * 0.18);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.18 + 0.5);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + i * 0.18);
+      osc.stop(ctx.currentTime + i * 0.18 + 0.5);
+    });
+  } catch { /* ignore */ }
+}
+
+// ── per-ticket log entry ─────────────────────────────────────────────────────
+interface TicketLog {
+  order: Order;
+  printedAt: Date;
+  printCount: number;
+}
+
+// ── TicketRow component ──────────────────────────────────────────────────────
+function TicketRow({
+  entry,
+  onReprint,
+  stationColor,
+  stationId,
+}: {
+  entry: TicketLog;
+  onReprint: () => void;
+  stationColor?: string;
+  stationId?: string; // when set, only items belonging to this station are shown
+}) {
   const [tick, setTick] = useState(0);
-  const [bumping, setBumping] = useState(false);
 
   useEffect(() => {
-    const t = setInterval(() => setTick(n => n + 1), 10000);
+    const t = setInterval(() => setTick(n => n + 1), 15000);
     return () => clearInterval(t);
   }, []);
+  void tick;
 
-  void tick; // used to trigger re-render for elapsed time
+  const { order, printCount } = entry;
 
-  const isOrderServed = order.status === 'SERVED';
-  const pendingItems = order.items.filter(i => !['SERVED', 'CANCELLED'].includes(i.status));
-  const allReady = !isOrderServed && pendingItems.length > 0 && pendingItems.every(i => i.status === 'READY');
+  // If viewing a specific station, filter items to only those belonging to it.
+  // kitchenStationId is set during normalization from menuItem.kitchenStationId.
+  const activeItems = order.items.filter(i => {
+    if (i.status === 'CANCELLED') return false;
+    if (stationId) return (i as any).kitchenStationId === stationId;
+    return true;
+  });
 
-  const handleItemAction = async (item: OrderItem) => {
-    const cfg = ITEM_STATUS_CONFIG[item.status as keyof typeof ITEM_STATUS_CONFIG];
-    if (!cfg?.next) return;
-    try {
-      await updateOrderItemStatus(order.id, item.id, cfg.next);
-      onRefresh?.();
-    } catch { /* noop */ }
-  };
+  // Don't render a ticket if there are no items for this station
+  if (activeItems.length === 0) return null;
 
-  const handleServeAll = async () => {
-    if (bumping) return;
-    setBumping(true);
-    try {
-      await updateOrderStatus(order.id, 'SERVED', order.tableId ?? undefined);
-      toast.success(`Ticket #${order.orderNumber} served!`);
-      onRefresh?.();
-    } catch {
-      toast.error('Failed to bump ticket');
-    } finally {
-      setBumping(false);
-    }
-  };
-
-  const elapsedMins = order.createdAt
-    ? (Date.now() - new Date(order.createdAt).getTime()) / 60000
-    : 0;
-
-  const isUrgent = elapsedMins > 20;
+  const elapsedMins = (Date.now() - new Date(order.createdAt).getTime()) / 60000;
+  const isUrgent  = elapsedMins > 20;
   const isWarning = elapsedMins > 10 && !isUrgent;
 
   return (
-    <div className={`flex flex-col rounded-xl border transition-all duration-200 overflow-hidden shadow-sm bg-card dark:bg-[#141721] w-full ${
+    <div className={`rounded-xl border transition-all duration-300 overflow-hidden bg-card dark:bg-[#141721] ${
       isUrgent
-        ? 'border-rose-500 ring-1 ring-rose-500/30 shadow-rose-500/10 dark:shadow-rose-950/40'
+        ? 'border-rose-500/70 shadow-md shadow-rose-950/20'
         : isWarning
-        ? 'border-amber-500 ring-1 ring-amber-500/30 shadow-amber-500/10 dark:shadow-amber-950/40'
-        : 'border-border dark:border-slate-800 hover:border-border/80 dark:hover:border-slate-700'
+        ? 'border-amber-500/60 shadow-sm shadow-amber-950/10'
+        : 'border-border/70 dark:border-slate-800'
     }`}>
-      {/* ── Top Urgency Header Bar ────────────────────────────────────────── */}
-      <div className={`px-2.5 py-1 flex items-center justify-between text-[11px] font-black uppercase tracking-wider text-white ${
-        isUrgent
-          ? 'bg-rose-600 animate-pulse'
-          : isWarning
-          ? 'bg-amber-600'
-          : 'bg-slate-800'
-      }`}>
-        <div className="flex items-center gap-1">
-          <Clock className="w-3 h-3 stroke-[2.5]" />
-          <span>{isUrgent ? 'URGENT' : isWarning ? 'DELAYED' : 'ACTIVE'} • {elapsed(order.createdAt)}</span>
-        </div>
-        <span className="font-bold tracking-wide text-[10px]">{order.type.replace('_', ' ')}</span>
-      </div>
+      {/* urgency strip — use station color if set */}
+      <div
+        className={`h-1 w-full ${
+          isUrgent ? 'bg-rose-500 animate-pulse' : isWarning ? 'bg-amber-500' : ''
+        }`}
+        style={!isUrgent && !isWarning && stationColor ? { backgroundColor: stationColor } : !isUrgent && !isWarning ? { backgroundColor: '#10b981cc' } : {}}
+      />
 
-      {/* ── Order Info Header ─────────────────────────────────────────────── */}
-      <div className="px-3 py-2 bg-muted/40 dark:bg-[#1a1e2b] border-b border-border/80 dark:border-slate-800 flex items-center justify-between gap-1.5">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-lg font-black tracking-tight text-foreground dark:text-white shrink-0">#{order.orderNumber}</span>
-          <Badge className="bg-primary/15 text-primary border border-primary/30 font-black text-[11px] px-1.5 py-0.5 rounded-md truncate">
-            {order.tableName ? `Table ${order.tableName}` : order.type.replace('_', ' ')}
-          </Badge>
-        </div>
-        <Badge
-          variant="outline"
-          className={`text-[10px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-md shrink-0 ${
-            order.status === 'READY'
-              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30'
-              : order.status === 'PREPARING'
-              ? 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border-indigo-500/30'
-              : order.status === 'SERVED'
-              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
-              : 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30'
-          }`}
-        >
-          {order.status}
-        </Badge>
-      </div>
-
-      {/* ── Note banner ───────────────────────────────────────────────────── */}
-      {order.note && (
-        <div className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold text-amber-700 dark:text-amber-300 bg-amber-500/15 border-b border-amber-500/25">
-          <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-500 dark:text-amber-400" />
-          <span className="truncate">{order.note}</span>
-        </div>
-      )}
-
-      {/* ── Items List ────────────────────────────────────────────────────── */}
-      <div className="p-2 space-y-1.5 flex-1 bg-card dark:bg-[#141721]">
-        {order.items.filter(i => i.status !== 'CANCELLED').map(item => {
-          const cfg = ITEM_STATUS_CONFIG[item.status as keyof typeof ITEM_STATUS_CONFIG]
-            ?? ITEM_STATUS_CONFIG.PENDING;
-          const isServed = item.status === 'SERVED';
-          const isReady = item.status === 'READY';
-          const isCooking = item.status === 'PREPARING';
-
-          return (
-            <div
-              key={item.id}
-              className={`flex items-center justify-between gap-2 p-2 rounded-lg border transition-all ${
-                isServed
-                  ? 'bg-muted/20 border-border/40 opacity-60 dark:bg-[#181c26]/60 dark:border-slate-800/80'
-                  : isReady
-                  ? 'bg-emerald-50/80 border-emerald-200 dark:bg-emerald-950/30 dark:border-emerald-500/40'
-                  : isCooking
-                  ? 'bg-indigo-50/80 border-indigo-200 dark:bg-indigo-950/30 dark:border-indigo-500/40'
-                  : 'bg-muted/40 border-border/70 hover:border-border dark:bg-[#1e2332] dark:border-slate-700/80 dark:hover:border-slate-600'
+      <div className="p-3 flex flex-col gap-2.5">
+        {/* top row: ticket# + type + time */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span className="text-xl font-black tracking-tight text-foreground dark:text-white">
+              #{order.orderNumber}
+            </span>
+            <Badge
+              className={`flex items-center gap-1 text-[10px] font-black uppercase tracking-wide px-1.5 py-0.5 rounded-md ${
+                order.type === 'DINE_IN'
+                  ? 'bg-indigo-500/15 text-indigo-400 border border-indigo-500/30'
+                  : order.type === 'TAKEAWAY'
+                  ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                  : 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
               }`}
             >
-              <div className="flex items-center gap-2 min-w-0">
-                <span className={`min-w-[26px] h-6 px-1 font-black text-xs rounded-md flex items-center justify-center shadow-xs shrink-0 ${
-                  isServed
-                    ? 'bg-muted text-muted-foreground dark:bg-slate-800 dark:text-slate-400'
-                    : 'bg-amber-400 text-slate-950'
-                }`}>
-                  {item.quantity}×
-                </span>
-                <div className="min-w-0">
-                  <div className={`font-bold text-xs leading-tight truncate ${
-                    isServed ? 'line-through text-muted-foreground dark:text-slate-400' : 'text-foreground dark:text-white'
-                  }`}>
-                    {item.menuItemName || (item as any).menuItem?.name || 'Dish Item'}
-                  </div>
-                  {item.note && (
-                    <div className="text-[10px] font-bold text-amber-700 dark:text-amber-300 bg-amber-500/15 px-1.5 py-0.5 rounded flex items-center gap-1 mt-0.5 truncate">
-                      <span>📝</span> {item.note}
-                    </div>
-                  )}
-                </div>
-              </div>
+              {orderTypeIcon(order.type)}
+              {orderTypeLabel(order.type)}
+            </Badge>
+            {order.tableName && (
+              <Badge variant="outline" className="text-[10px] font-bold px-1.5 py-0.5 rounded-md">
+                Table {order.tableName}
+              </Badge>
+            )}
+          </div>
+          <span className="text-[11px] text-muted-foreground font-semibold shrink-0">
+            {formatTime(order.createdAt)}
+          </span>
+        </div>
 
-              <div className="shrink-0">
-                {cfg.next ? (
-                  <Button
-                    size="sm"
-                    className={`h-7 px-2.5 font-bold text-xs rounded-md shadow-xs gap-1.5 transition-all active:scale-95 ${
-                      cfg.nextLabel === 'Ready!'
-                        ? 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-white shadow-orange-950/40'
-                        : 'bg-indigo-600 hover:bg-indigo-500 text-white'
-                    }`}
-                    onClick={() => handleItemAction(item)}
-                  >
-                    {cfg.nextLabel === 'Ready!' && <Flame className="w-3 h-3 text-white" />}
-                    {cfg.nextLabel}
-                  </Button>
-                ) : (
-                  <Badge className="h-6 px-2 font-bold text-[10px] rounded-md bg-muted text-muted-foreground border-border dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700 flex items-center gap-1">
-                    <Check className="w-3 h-3 text-emerald-500 dark:text-emerald-400" />
-                    Served
-                  </Badge>
+        {/* items list — filtered to this station when stationId is set */}
+        <div className="space-y-1">
+          {activeItems.map(item => (
+            <div key={item.id} className="flex items-baseline gap-2 text-sm">
+              <span className="font-black text-amber-500 dark:text-amber-400 min-w-[20px] text-base leading-none">
+                {item.quantity}×
+              </span>
+              <div className="min-w-0">
+                <span className="font-semibold text-foreground dark:text-slate-200 leading-tight">
+                  {item.menuItemName}
+                </span>
+                {item.note && (
+                  <span className="block text-[11px] text-amber-600 dark:text-amber-300 italic">
+                    ↳ {item.note}
+                  </span>
                 )}
               </div>
             </div>
-          );
-        })}
-      </div>
+          ))}
+        </div>
 
-      {/* ── Footer action if all ready ────────────────────────────────────── */}
-      {allReady && (
-        <div className="p-2 pt-0 bg-card dark:bg-[#141721]">
+        {/* order note */}
+        {order.note && (
+          <div className="flex items-start gap-1.5 px-2 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-xs font-semibold text-amber-700 dark:text-amber-300">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500" />
+            {order.note}
+          </div>
+        )}
+
+        {/* footer: elapsed + print info + Print button */}
+        <div className="flex items-center justify-between gap-2 pt-0.5 border-t border-border/50 dark:border-slate-800">
+          <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+            <span className={`flex items-center gap-1 font-semibold ${
+              isUrgent ? 'text-rose-400' : isWarning ? 'text-amber-400' : ''
+            }`}>
+              <Clock className="w-3 h-3" />
+              {elapsed(order.createdAt)}
+            </span>
+            <span className="flex items-center gap-1">
+              <Printer className="w-3 h-3" />
+              {printCount === 1 ? 'Printed' : `×${printCount}`}
+            </span>
+          </div>
           <Button
-            disabled={bumping}
-            className="w-full h-8 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs rounded-lg shadow-md shadow-emerald-950/30 gap-1.5 uppercase tracking-wider active:scale-95 disabled:opacity-50"
-            onClick={handleServeAll}
+            size="sm"
+            variant="outline"
+            className="h-7 px-2.5 text-xs font-bold gap-1.5 rounded-lg border-border/80 hover:bg-muted/60"
+            onClick={onReprint}
+            title="Reprint kitchen ticket"
           >
-            <CheckCircle className="w-3.5 h-3.5 stroke-[2.5]" />
-            {bumping ? 'Serving...' : 'Bump Ticket • Serve All'}
+            <Printer className="w-3 h-3" />
+            Print
           </Button>
         </div>
-      )}
+      </div>
     </div>
   );
 }
 
-// ── KDS Page ────────────────────────────────────────────────────────────────
+// ── KDS / Print Queue page ────────────────────────────────────────────────────
 export default function KDSPage() {
-  const [orders, setOrders] = useState<Order[]>([]);
+  const [ticketLog, setTicketLog] = useState<TicketLog[]>([]);
   const [filter, setFilter] = useState<'all' | 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY'>('all');
   const [loading, setLoading] = useState(true);
-  const [, setTick] = useState(0);
+  const printedIds = useRef<Set<string>>(new Set());
 
-  const loadOrders = async () => {
+  // Kitchen station state
+  const [stations, setStations] = useState<KitchenStation[]>([]);
+  const [selectedStationId, setSelectedStationId] = useState<string>(() => {
+    // Persist the last-selected station across page reloads
+    return localStorage.getItem('kds_station') ?? 'all';
+  });
+  const [stationDropdownOpen, setStationDropdownOpen] = useState(false);
+
+  const restName = (() => {
     try {
-      const all = await fetchActiveOrders();
-      setOrders(all.filter(ord => !['COMPLETED', 'CANCELLED'].includes(ord.status)));
+      const s = localStorage.getItem('pos_settings');
+      return s ? (JSON.parse(s) as any).restaurantName ?? 'Restaurant' : 'Restaurant';
+    } catch { return 'Restaurant'; }
+  })();
+
+  const selectedStation = stations.find(s => s.id === selectedStationId);
+
+  // Load kitchen stations on mount
+  useEffect(() => {
+    fetchKitchenStations()
+      .then(data => setStations(data.filter(s => s.isActive)))
+      .catch(() => {});
+  }, []);
+
+  // Join/leave the per-station Socket.IO room whenever the selection changes
+  useEffect(() => {
+    if (selectedStationId === 'all') return;
+    joinStationRoom(selectedStationId);
+    return () => {
+      leaveStationRoom(selectedStationId);
+    };
+  }, [selectedStationId]);
+
+  // Load orders based on selected station
+  const loadOrders = useCallback(async () => {
+    setLoading(true);
+    try {
+      let all: any[];
+      if (selectedStationId === 'all') {
+        all = await fetchActiveOrders();
+      } else {
+        all = await fetchStationOrders(selectedStationId, true);
+      }
+      const active = all.filter(o => !['COMPLETED', 'CANCELLED'].includes(o.status));
+      setTicketLog(prev => {
+        const loggedIds = new Set(prev.map(e => e.order.id));
+        const newEntries: TicketLog[] = active
+          .filter(o => !loggedIds.has(o.id))
+          .map(o => ({ order: normalizeSocketOrder(o), printedAt: new Date(), printCount: 0 }));
+        return newEntries.length ? [...newEntries.reverse(), ...prev] : prev;
+      });
     } catch (err) {
       console.error('KDS load error:', err);
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectedStationId]);
 
   useEffect(() => {
+    setTicketLog([]);
+    printedIds.current.clear();
     loadOrders();
-    const ticker = setInterval(() => setTick(n => n + 1), 30000);
-    return () => clearInterval(ticker);
-  }, []);
+  }, [loadOrders]);
 
-  // Live updates
-  useSocketEvent('order:new', (newOrd: any) => {
-    playKitchenChime();
-    toast('🔔 New Order Ticket for Kitchen!', { icon: '🍳', duration: 4000 });
-    loadOrders();
+  // auto-print helper
+  const autoPrint = useCallback((order: Order) => {
+    if (printedIds.current.has(order.id)) return; // dedup
+    printedIds.current.add(order.id);
+    printKitchenTicket(order, {
+      restaurantName: restName,
+      stationId: selectedStationId === 'all' ? undefined : selectedStationId,
+      stationName: selectedStation?.name,
+    });
+    setTicketLog(prev => {
+      const idx = prev.findIndex(e => e.order.id === order.id);
+      if (idx >= 0) {
+        const updated = [...prev];
+        updated[idx] = { ...updated[idx], printedAt: new Date(), printCount: updated[idx].printCount + 1 };
+        return updated;
+      }
+      return [{ order, printedAt: new Date(), printCount: 1 }, ...prev];
+    });
+  }, [restName, selectedStationId, selectedStation]);
+
+  void autoPrint; // used via socket
+
+  // Socket: new order → chime + add to queue
+  useSocketEvent<any>('order:new', (raw) => {
+    const newOrder = normalizeSocketOrder(raw);
+    // Check if this order has any items for the currently viewed station
+    const stationItems = selectedStationId === 'all'
+      ? newOrder.items
+      : newOrder.items.filter((i: any) => i.kitchenStationId === selectedStationId);
+    if (stationItems.length === 0) return; // nothing for this station
+    playChime();
+    setTicketLog(prev => {
+      if (prev.some(e => e.order.id === newOrder.id)) return prev;
+      printedIds.current.add(newOrder.id);
+      return [{ order: newOrder, printedAt: new Date(), printCount: 1 }, ...prev];
+    });
   });
+
+  // update order data in log on status changes
   useSocketEvent('order:statusChanged', () => loadOrders());
   useSocketEvent('order:updated', () => loadOrders());
-  useSocketEvent('orderItem:statusChanged', () => loadOrders());
 
-  const filtered = filter === 'all' ? orders : orders.filter(o => o.type === filter);
+  const handleReprint = (entry: TicketLog) => {
+    printKitchenTicket(entry.order, {
+      restaurantName: restName,
+      stationId: selectedStationId === 'all' ? undefined : selectedStationId,
+      stationName: selectedStation?.name,
+    });
+    setTicketLog(prev =>
+      prev.map(e => e.order.id === entry.order.id
+        ? { ...e, printedAt: new Date(), printCount: e.printCount + 1 }
+        : e,
+      ),
+    );
+    toast.success(`Reprinted ticket #${entry.order.orderNumber}`);
+  };
+
+  const filtered = filter === 'all'
+    ? ticketLog
+    : ticketLog.filter(e => e.order.type === filter);
 
   const counts = {
-    all: orders.length,
-    DINE_IN: orders.filter(o => o.type === 'DINE_IN').length,
-    TAKEAWAY: orders.filter(o => o.type === 'TAKEAWAY').length,
-    DELIVERY: orders.filter(o => o.type === 'DELIVERY').length,
+    all:      ticketLog.length,
+    DINE_IN:  ticketLog.filter(e => e.order.type === 'DINE_IN').length,
+    TAKEAWAY: ticketLog.filter(e => e.order.type === 'TAKEAWAY').length,
+    DELIVERY: ticketLog.filter(e => e.order.type === 'DELIVERY').length,
   };
+
+  const FILTER_TABS = [
+    { key: 'all',      label: 'All',      icon: null },
+    { key: 'DINE_IN',  label: 'Dine In',  icon: <UtensilsCrossed className="w-3.5 h-3.5" /> },
+    { key: 'TAKEAWAY', label: 'Takeaway', icon: <Package className="w-3.5 h-3.5" /> },
+    { key: 'DELIVERY', label: 'Delivery', icon: <Bike className="w-3.5 h-3.5" /> },
+  ] as const;
 
   return (
     <div className="space-y-4">
-      {/* Header */}
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
           <div className="h-12 w-12 rounded-2xl bg-primary/10 flex items-center justify-center text-primary shadow-sm">
-            <ChefHat className="h-6 w-6 stroke-[2.5]" />
+            <ReceiptText className="h-6 w-6 stroke-[2.5]" />
           </div>
           <div>
             <div className="flex items-center gap-2.5">
-              <h1 className="text-2xl sm:text-3xl font-black tracking-tight">Kitchen Display</h1>
+              <h1 className="text-2xl sm:text-3xl font-black tracking-tight">Kitchen Tickets</h1>
               <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
                 <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
                 Live
               </span>
             </div>
-            <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">Real-time order tickets & cooking station tracking</p>
+            <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
+              Orders auto-print to kitchen on arrival — reprint any ticket below
+            </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <Tabs value={filter} onValueChange={v => setFilter(v as any)}>
-            <TabsList className="bg-muted/60 h-11 p-1 rounded-xl">
-              <TabsTrigger value="all" className="gap-2 text-xs sm:text-sm font-bold px-3.5 rounded-lg data-[state=active]:bg-background">
-                All
-                <Badge variant="secondary" className="px-1.5 py-0 text-xs font-mono font-bold h-5">
-                  {counts.all}
-                </Badge>
-              </TabsTrigger>
-              <TabsTrigger value="DINE_IN" className="gap-2 text-xs sm:text-sm font-bold px-3.5 rounded-lg data-[state=active]:bg-background">
-                Dine In
-                <Badge variant="secondary" className="px-1.5 py-0 text-xs font-mono font-bold h-5">
-                  {counts.DINE_IN}
-                </Badge>
-              </TabsTrigger>
-              <TabsTrigger value="TAKEAWAY" className="gap-2 text-xs sm:text-sm font-bold px-3.5 rounded-lg data-[state=active]:bg-background">
-                Takeaway
-                <Badge variant="secondary" className="px-1.5 py-0 text-xs font-mono font-bold h-5">
-                  {counts.TAKEAWAY}
-                </Badge>
-              </TabsTrigger>
-              <TabsTrigger value="DELIVERY" className="gap-2 text-xs sm:text-sm font-bold px-3.5 rounded-lg data-[state=active]:bg-background">
-                Delivery
-                <Badge variant="secondary" className="px-1.5 py-0 text-xs font-mono font-bold h-5">
-                  {counts.DELIVERY}
-                </Badge>
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
+        {/* Station selector + Filter tabs + refresh */}
+        <div className="flex items-center gap-2 flex-wrap">
+        {/* Kitchen Station Selector — always shown so staff can pick their station */}
+          <div className="relative">
+              <button
+                id="kds-station-selector"
+                onClick={() => setStationDropdownOpen(o => !o)}
+                className="flex items-center gap-2 h-9 px-3 rounded-xl border border-border/80 bg-background text-xs font-bold hover:bg-muted/60 transition-colors"
+              >
+                <Layers className="w-3.5 h-3.5 text-muted-foreground" />
+                {selectedStation ? (
+                  <>
+                    <span
+                      className="h-2 w-2 rounded-full shrink-0"
+                      style={{ backgroundColor: selectedStation.color }}
+                    />
+                    {selectedStation.name}
+                  </>
+                ) : (
+                  <span>All Kitchens</span>
+                )}
+                <ChevronDown className="w-3 h-3 text-muted-foreground ml-0.5" />
+              </button>
+              {stationDropdownOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-10"
+                    onClick={() => setStationDropdownOpen(false)}
+                  />
+                  <div className="absolute right-0 top-10 z-20 min-w-[200px] bg-card border border-border/80 rounded-xl shadow-xl overflow-hidden py-1">
+                    <button
+                      onClick={() => { setSelectedStationId('all'); localStorage.setItem('kds_station', 'all'); setStationDropdownOpen(false); }}
+                      className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-bold text-left hover:bg-muted/60 transition-colors ${selectedStationId === 'all' ? 'text-primary bg-primary/5' : 'text-foreground'}`}
+                    >
+                      <Layers className="w-3.5 h-3.5" />
+                      All Kitchens
+                    </button>
+                    {stations.length === 0 ? (
+                      <p className="px-3 py-2 text-[11px] text-muted-foreground italic">
+                        No stations yet — add them in Settings
+                      </p>
+                    ) : (
+                      stations.map(station => (
+                        <button
+                          key={station.id}
+                          onClick={() => { setSelectedStationId(station.id); localStorage.setItem('kds_station', station.id); setStationDropdownOpen(false); }}
+                          className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-bold text-left hover:bg-muted/60 transition-colors ${selectedStationId === station.id ? 'text-primary bg-primary/5' : 'text-foreground'}`}
+                        >
+                          <span
+                            className="h-2.5 w-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: station.color }}
+                          />
+                          {station.name}
+                          {station._count && (
+                            <span className="ml-auto text-muted-foreground font-mono text-[10px]">
+                              {station._count.menuItems} items
+                            </span>
+                          )}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
 
+          <div className="flex items-center gap-1 bg-muted/60 rounded-xl p-1">
+            {FILTER_TABS.map(tab => (
+              <button
+                key={tab.key}
+                onClick={() => setFilter(tab.key)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  filter === tab.key
+                    ? 'bg-background shadow text-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {tab.icon}
+                {tab.label}
+                <span className={`ml-0.5 px-1.5 py-0 rounded-full text-[10px] font-mono font-black ${
+                  filter === tab.key ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground'
+                }`}>
+                  {counts[tab.key]}
+                </span>
+              </button>
+            ))}
+          </div>
           <Button
             variant="outline"
             size="icon"
-            className="h-11 w-11 rounded-xl shrink-0 border-border/80"
-            title="Refresh orders"
+            className="h-9 w-9 rounded-xl shrink-0 border-border/80"
+            title="Refresh"
             onClick={() => loadOrders()}
           >
             <RefreshCw className="h-4 w-4" />
@@ -340,55 +498,102 @@ export default function KDSPage() {
         </div>
       </div>
 
-      {/* Legend & Urgency Guide */}
-      <div className="flex flex-wrap items-center gap-3 px-3 py-1.5 rounded-xl bg-card/70 border border-border/70 text-xs text-muted-foreground shadow-2xs">
-        <span className="font-bold text-foreground">Status:</span>
-        <div className="flex items-center gap-1.5 font-semibold">
-          <span className="h-2 w-2 rounded-full bg-amber-400" /> Pending
+      {/* ── Active station banner ────────────────────────────────────────────── */}
+      {selectedStation && (
+        <div
+          className="flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-semibold"
+          style={{
+            borderColor: selectedStation.color + '55',
+            backgroundColor: selectedStation.color + '11',
+            color: selectedStation.color,
+          }}
+        >
+          <span
+            className="h-2.5 w-2.5 rounded-full animate-pulse"
+            style={{ backgroundColor: selectedStation.color }}
+          />
+          Viewing: <span className="font-black">{selectedStation.name}</span>
+          {selectedStation.description && (
+            <span className="text-muted-foreground font-normal ml-1">— {selectedStation.description}</span>
+          )}
         </div>
-        <div className="flex items-center gap-1.5 font-semibold">
-          <span className="h-2 w-2 rounded-full bg-indigo-400" /> Preparing
+      )}
+
+      {/* ── Info strip ─────────────────────────────────────────────────────── */}
+      <div className="flex flex-wrap items-center gap-3 px-3 py-2 rounded-xl bg-card/70 border border-border/70 text-xs text-muted-foreground">
+        <div className="flex items-center gap-1.5 font-semibold text-foreground">
+          <Printer className="w-3.5 h-3.5 text-primary" />
+          Auto-Print Mode
         </div>
-        <div className="flex items-center gap-1.5 font-semibold">
-          <span className="h-2 w-2 rounded-full bg-emerald-400" /> Ready
-        </div>
-        <div className="flex items-center gap-1.5 font-semibold">
-          <span className="h-2 w-2 rounded-full bg-slate-400" /> Served
-        </div>
-        <span className="h-3.5 w-px bg-border/60 mx-0.5 hidden sm:inline-block" />
-        <span className="font-bold text-foreground">Urgency:</span>
-        <div className="flex items-center gap-1.5 text-amber-400 font-bold">
-          <span className="h-2 w-2 rounded-full bg-amber-400" /> &gt;10 min warning
-        </div>
-        <div className="flex items-center gap-1.5 text-rose-400 font-bold">
-          <span className="h-2 w-2 rounded-full bg-rose-400" /> &gt;20 min urgent
+        <span className="h-3 w-px bg-border/60 hidden sm:block" />
+        <span>New orders trigger the system print dialog automatically</span>
+        <span className="h-3 w-px bg-border/60 hidden sm:block" />
+        <div className="flex items-center gap-3">
+          <span className="flex items-center gap-1 text-emerald-400 font-semibold">
+            <span className="h-2 w-2 rounded-full bg-emerald-400" /> &lt;10 min
+          </span>
+          <span className="flex items-center gap-1 text-amber-400 font-semibold">
+            <span className="h-2 w-2 rounded-full bg-amber-400" /> &gt;10 min
+          </span>
+          <span className="flex items-center gap-1 text-rose-400 font-semibold">
+            <span className="h-2 w-2 rounded-full bg-rose-400 animate-pulse" /> &gt;20 min urgent
+          </span>
         </div>
       </div>
 
-      {/* Orders Grid */}
+      {/* ── Ticket grid / empty states ──────────────────────────────────────── */}
       {loading ? (
         <div className="flex flex-col items-center justify-center py-24 gap-3 text-muted-foreground">
           <div className="h-9 w-9 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          <p className="text-sm font-semibold">Loading kitchen tickets...</p>
+          <p className="text-sm font-semibold">Loading tickets...</p>
         </div>
       ) : filtered.length === 0 ? (
-        <Card className="flex flex-col items-center justify-center py-20 text-center border-dashed rounded-2xl">
-          <div className="h-16 w-16 rounded-2xl bg-muted/50 flex items-center justify-center text-muted-foreground/40 mb-3">
+        <div className="flex flex-col items-center justify-center py-24 text-center rounded-2xl border border-dashed border-border/60 bg-card/50">
+          <div className="h-16 w-16 rounded-2xl bg-muted/50 flex items-center justify-center text-muted-foreground/40 mb-4">
             <ChefHat className="h-8 w-8" />
           </div>
-          <h3 className="text-base font-bold">Kitchen is Clear! 🎉</h3>
-          <p className="text-sm text-muted-foreground max-w-sm mt-1">
-            There are currently no active tickets in the kitchen. New orders will appear automatically in real-time.
+          <h3 className="text-base font-bold text-foreground">No tickets yet</h3>
+          <p className="text-sm text-muted-foreground max-w-xs mt-1">
+            {selectedStation
+              ? `${selectedStation.name} is clear! Orders routed here will appear in real time.`
+              : 'Kitchen is clear! New orders will automatically print and appear here in real time.'}
           </p>
-        </Card>
+          <div className="mt-4 flex items-center gap-2 px-4 py-2 rounded-xl bg-primary/8 border border-primary/20 text-xs font-semibold text-primary">
+            <Flame className="w-3.5 h-3.5" />
+            Waiting for orders…
+          </div>
+        </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3 items-start">
-          {filtered.map(order => (
-            <KDSCard key={order.id} order={order} onRefresh={loadOrders} />
+          {filtered.map(entry => (
+            <TicketRow
+              key={entry.order.id}
+              entry={entry}
+              stationColor={selectedStation?.color}
+              stationId={selectedStation?.id}
+              onReprint={() => handleReprint(entry)}
+            />
           ))}
+        </div>
+      )}
+
+      {/* ── Summary footer ──────────────────────────────────────────────────── */}
+      {ticketLog.length > 0 && (
+        <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-muted/30 border border-border/50 text-xs text-muted-foreground">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="font-semibold">
+              {ticketLog.reduce((s, e) => s + e.printCount, 0)} ticket{ticketLog.reduce((s, e) => s + e.printCount, 0) !== 1 ? 's' : ''} printed this session
+            </span>
+          </div>
+          <button
+            className="text-muted-foreground hover:text-foreground font-semibold underline underline-offset-2 transition-colors"
+            onClick={() => { setTicketLog([]); printedIds.current.clear(); }}
+          >
+            Clear log
+          </button>
         </div>
       )}
     </div>
   );
 }
-

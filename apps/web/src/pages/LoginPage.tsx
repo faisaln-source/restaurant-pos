@@ -12,7 +12,6 @@ import { Card } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import toast from 'react-hot-toast';
 
 interface DemoAccount {
@@ -322,12 +321,6 @@ export default function LoginPage() {
                           </div>
                         </div>
 
-                        <Badge
-                          variant="outline"
-                          className={`font-mono text-[10px] px-2 py-0.5 shrink-0 ${acc.badgeStyle}`}
-                        >
-                          PIN {acc.pin}
-                        </Badge>
                       </button>
                     );
                   })}

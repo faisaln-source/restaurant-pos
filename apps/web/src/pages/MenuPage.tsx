@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   Plus, Pencil, Trash2, Search, Upload, ToggleLeft, ToggleRight,
-  Database, Leaf, Clock, Sparkles, AlertCircle, MoreVertical,
+  Database, Clock, MoreVertical,
+  Calendar, TrendingUp, Eye, ChefHat,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
@@ -11,8 +12,11 @@ import {
   createMenuItem, updateMenuItem, deleteMenuItem,
   toggleItemAvailability, uploadMenuImage, seedMenu,
 } from '../services/menu.service';
+import { fetchKitchenStations } from '../services/kitchen-station.service';
 import { useSocketEvent } from '../lib/socket';
-import type { MenuCategory, MenuItem } from '../lib/types';
+import type { MenuCategory, MenuItem, KitchenStation } from '../lib/types';
+import { useAuthStore } from '../store/authStore';
+import DailyPriceBoardModal from '../components/DailyPriceBoardModal';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -27,6 +31,16 @@ import {
 } from '@/components/ui/dropdown-menu';
 
 const EMOJI_OPTS = ['🥗', '🍽️', '🍕', '🍝', '🍰', '🥤', '🍔', '🌮', '🍣', '☕', '🍺', '🍦'];
+
+const DAYS_LIST = [
+  { key: 'monday', label: 'Mon' },
+  { key: 'tuesday', label: 'Tue' },
+  { key: 'wednesday', label: 'Wed' },
+  { key: 'thursday', label: 'Thu' },
+  { key: 'friday', label: 'Fri' },
+  { key: 'saturday', label: 'Sat' },
+  { key: 'sunday', label: 'Sun' },
+];
 
 // ── Category Dialog ──────────────────────────────────────────────────────────
 function CategoryDialog({
@@ -131,12 +145,14 @@ function ItemDialog({
   item,
   categories,
   activeCategoryId,
+  kitchenStations,
   onClose,
 }: {
   open: boolean;
   item: MenuItem | null;
   categories: MenuCategory[];
   activeCategoryId: string;
+  kitchenStations: KitchenStation[];
   onClose: () => void;
 }) {
   const [form, setForm] = useState({
@@ -148,6 +164,13 @@ function ItemDialog({
     isVeg: true,
     displayOrder: '1',
   });
+  const [kitchenStationId, setKitchenStationId] = useState<string>('');
+  const [isVariablePrice, setIsVariablePrice] = useState(false);
+  const [dailyPrice, setDailyPrice] = useState('');
+  const [dayPrices, setDayPrices] = useState<Record<string, string>>({
+    monday: '', tuesday: '', wednesday: '', thursday: '', friday: '', saturday: '', sunday: '',
+  });
+
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState('');
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
@@ -165,6 +188,20 @@ function ItemDialog({
         isVeg: item?.isVeg ?? true,
         displayOrder: item?.displayOrder?.toString() ?? '1',
       });
+      setKitchenStationId(item?.kitchenStationId ?? '');
+      setIsVariablePrice(Boolean(item?.isVariablePrice));
+      setDailyPrice(item?.dailyPrice != null ? String(item.dailyPrice) : '');
+
+      const initialDayPrices: Record<string, string> = {
+        monday: '', tuesday: '', wednesday: '', thursday: '', friday: '', saturday: '', sunday: '',
+      };
+      if (item?.dayPrices && typeof item.dayPrices === 'object') {
+        Object.entries(item.dayPrices).forEach(([k, v]) => {
+          if (v !== undefined && v !== null) initialDayPrices[k] = String(v);
+        });
+      }
+      setDayPrices(initialDayPrices);
+
       setImageFile(null);
       setImagePreview(item?.imageUrl ?? '');
       setUploadProgress(null);
@@ -172,6 +209,15 @@ function ItemDialog({
   }, [open, item, categories, activeCategoryId]);
 
   const set = (k: string, v: string | boolean) => setForm(f => ({ ...f, [k]: v }));
+
+  const copyBasePriceToAllDays = () => {
+    if (!form.price) return;
+    const next: Record<string, string> = {};
+    DAYS_LIST.forEach(({ key }) => {
+      next[key] = form.price;
+    });
+    setDayPrices(next);
+  };
 
   const handleImage = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -204,10 +250,23 @@ function ItemDialog({
         );
       }
 
+      const parsedDayPrices: Record<string, number> = {};
+      if (isVariablePrice) {
+        DAYS_LIST.forEach(({ key }) => {
+          const val = parseFloat(dayPrices[key]);
+          if (!isNaN(val) && val > 0) {
+            parsedDayPrices[key] = val;
+          }
+        });
+      }
+
       const data = {
         name: form.name.trim(),
         description: form.description.trim(),
         price: parseFloat(form.price),
+        isVariablePrice,
+        dailyPrice: isVariablePrice && dailyPrice ? parseFloat(dailyPrice) : null,
+        dayPrices: isVariablePrice ? parsedDayPrices : null,
         categoryId: form.categoryId,
         categoryName: cat?.name ?? '',
         preparationTime: parseInt(form.preparationTime) || 10,
@@ -215,6 +274,7 @@ function ItemDialog({
         isAvailable: item?.isAvailable ?? true,
         displayOrder: parseInt(form.displayOrder) || 1,
         imageUrl,
+        kitchenStationId: kitchenStationId || null,
       };
 
       if (item) {
@@ -235,7 +295,7 @@ function ItemDialog({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="sm:max-w-[520px]">
+      <DialogContent className="sm:max-w-[580px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{item ? 'Edit Menu Item' : 'New Menu Item'}</DialogTitle>
           <DialogDescription>
@@ -278,17 +338,24 @@ function ItemDialog({
             {uploadProgress !== null && (
               <div className="space-y-1">
                 <div className="flex justify-between text-[11px] font-bold text-primary">
-                  <span>Uploading to cloud...</span>
+                  <span>
+                    {uploadProgress >= 40 && uploadProgress < 100
+                      ? 'Saving to server...'
+                      : uploadProgress === 100
+                      ? 'Upload complete!'
+                      : 'Uploading...'}
+                  </span>
                   <span>{uploadProgress}%</span>
                 </div>
                 <div className="h-1.5 w-full bg-muted rounded-full overflow-hidden">
                   <div
-                    className="h-full bg-primary transition-all duration-200"
+                    className="h-full bg-primary transition-all duration-300"
                     style={{ width: `${uploadProgress}%` }}
                   />
                 </div>
               </div>
             )}
+
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -322,6 +389,23 @@ function ItemDialog({
               >
                 {categories.map(c => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
               </select>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-foreground flex items-center gap-1.5">
+                <ChefHat size={13} className="text-orange-400" /> Kitchen Station
+              </label>
+              <select
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                value={kitchenStationId}
+                onChange={e => setKitchenStationId(e.target.value)}
+              >
+                <option value="">— No station (unrouted) —</option>
+                {kitchenStations.filter(s => s.isActive).map(s => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+              <p className="text-[10px] text-muted-foreground">Orders with this item will be sent to the selected kitchen station</p>
             </div>
 
             <div className="space-y-1.5">
@@ -370,7 +454,94 @@ function ItemDialog({
                 </Button>
               </div>
             </div>
+
+            {/* Variable Day-Wise Pricing Section */}
+            <div className="col-span-2 p-3.5 rounded-xl border border-border/80 bg-muted/20 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                    <TrendingUp size={14} className="text-primary" />
+                    Variable Price on Different Days
+                  </div>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    Enable day-specific rates (e.g. weekend surges or daily market catch)
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={isVariablePrice ? 'default' : 'outline'}
+                  onClick={() => setIsVariablePrice(!isVariablePrice)}
+                  className={`h-7 px-3 text-xs font-bold cursor-pointer ${
+                    isVariablePrice ? 'bg-primary text-primary-foreground' : ''
+                  }`}
+                >
+                  {isVariablePrice ? 'Enabled' : 'Disabled'}
+                </Button>
+              </div>
+
+              {isVariablePrice && (
+                <div className="space-y-3 pt-2 border-t border-border/50">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
+                      Day-of-Week Schedule (₹)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={copyBasePriceToAllDays}
+                      className="text-[11px] text-primary hover:underline cursor-pointer font-medium"
+                    >
+                      Copy Base Price ({form.price ? `₹${form.price}` : '₹0'}) to All Days
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-4 sm:grid-cols-7 gap-1.5">
+                    {DAYS_LIST.map(({ key, label }) => (
+                      <div key={key} className="space-y-1 text-center">
+                        <label className="text-[10px] font-bold text-muted-foreground uppercase">
+                          {label}
+                        </label>
+                        <Input
+                          type="number"
+                          step="0.5"
+                          min="0"
+                          value={dayPrices[key] || ''}
+                          onChange={(e) => setDayPrices((prev) => ({ ...prev, [key]: e.target.value }))}
+                          placeholder={form.price || '0'}
+                          className="h-8 text-xs font-mono text-center px-1"
+                        />
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Quick Daily Override for Today */}
+                  <div className="pt-2 border-t border-border/40 flex items-center justify-between gap-3">
+                    <div className="text-[11px]">
+                      <span className="font-bold text-foreground">Today's Override Rate:</span>
+                      <span className="text-muted-foreground ml-1.5">
+                        (Leave empty to use day schedule)
+                      </span>
+                    </div>
+                    <div className="relative w-28 shrink-0">
+                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-muted-foreground">
+                        ₹
+                      </span>
+                      <Input
+                        type="number"
+                        step="0.5"
+                        min="0"
+                        value={dailyPrice}
+                        onChange={(e) => setDailyPrice(e.target.value)}
+                        placeholder="Optional"
+                        className="h-8 pl-6 text-xs font-mono text-right"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
+
 
           <DialogFooter className="pt-2">
             <Button type="button" variant="outline" onClick={onClose}>
@@ -388,6 +559,9 @@ function ItemDialog({
 
 // ── Main Menu Page ──────────────────────────────────────────────────────────
 export default function MenuPage() {
+  const { profile } = useAuthStore();
+  const isAdmin = profile?.role === 'ADMIN' || profile?.role === 'MANAGER';
+
   const [categories, setCategories] = useState<MenuCategory[]>([]);
   const [items, setItems] = useState<MenuItem[]>([]);
   const [activeCatId, setActiveCatId] = useState<string>('all');
@@ -397,12 +571,17 @@ export default function MenuPage() {
   const [itemDialogOpen, setItemDialogOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState<MenuItem | null>(null);
   const [seeding, setSeeding] = useState(false);
+  const [dailyBoardOpen, setDailyBoardOpen] = useState(false);
+  const [kitchenStations, setKitchenStations] = useState<KitchenStation[]>([]);
+
+  const variableItemsCount = items.filter(i => i.isVariablePrice).length;
 
   useEffect(() => {
     const unsub1 = subscribeToCategories((cats) => {
       setCategories(cats);
     });
     const unsub2 = subscribeToMenuItems(setItems);
+    fetchKitchenStations().then(setKitchenStations).catch(() => {});
     return () => { unsub1(); unsub2(); };
   }, []);
 
@@ -465,36 +644,59 @@ export default function MenuPage() {
   });
 
   return (
-    <div className="flex flex-col lg:flex-row gap-5 h-auto lg:h-[calc(100vh-108px)] overflow-hidden">
+    <div className="flex flex-col gap-4">
+      {/* Read-only notice for non-admin roles */}
+      {!isAdmin && (
+        <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-xl border border-amber-500/30 bg-amber-500/8 text-amber-400 text-xs font-semibold">
+          <Eye size={14} className="shrink-0" />
+          <span>You are viewing the menu in <strong>read-only</strong> mode. Contact an Admin or Manager to make changes.</span>
+        </div>
+      )}
+    <div className="flex flex-col lg:flex-row gap-5">
       {/* Categories Left Sidebar Card */}
-      <Card className="w-full lg:w-[270px] flex-shrink-0 flex flex-col h-auto max-h-[300px] lg:max-h-none lg:h-full border-border/80 bg-card/70 overflow-hidden shadow-sm rounded-2xl">
+      <Card className="w-full lg:w-[270px] flex-shrink-0 flex flex-col border-border/80 bg-card/70 shadow-sm rounded-2xl" style={{ alignSelf: 'flex-start', position: 'sticky', top: 0, maxHeight: 'calc(100vh - 120px)', overflow: 'hidden' }}>
         <div className="p-4 border-b border-border/80 flex items-center justify-between">
           <h3 className="font-extrabold text-sm text-foreground uppercase tracking-wider">Categories</h3>
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-8 w-8 rounded-xl text-primary hover:bg-primary/10"
-            onClick={() => { setSelectedCat(null); setCatDialogOpen(true); }}
-            title="Add Category"
-          >
-            <Plus size={18} />
-          </Button>
+          {isAdmin && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8 rounded-xl text-primary hover:bg-primary/10"
+              onClick={() => { setSelectedCat(null); setCatDialogOpen(true); }}
+              title="Add Category"
+            >
+              <Plus size={18} />
+            </Button>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5">
-          <button
-            onClick={() => setActiveCatId('all')}
-            className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-sm font-bold transition-all ${
-              activeCatId === 'all'
-                ? 'bg-primary/15 text-primary shadow-xs'
-                : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
-            }`}
-          >
-            <span className="flex items-center gap-2.5 text-sm">🍽️ All Items</span>
-            <Badge variant="secondary" className="text-xs py-0.5 px-2 h-5 font-mono font-bold">
-              {items.length}
-            </Badge>
-          </button>
+          <div className={`group flex items-center justify-between px-3.5 py-3 rounded-xl text-sm font-bold transition-all ${
+            activeCatId === 'all'
+              ? 'bg-primary/15 text-primary shadow-xs'
+              : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+          }`}>
+            <button
+              onClick={() => setActiveCatId('all')}
+              className="flex items-center gap-2.5 flex-1 text-left"
+            >
+              <span>🍽️ All Items</span>
+            </button>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <Badge variant="secondary" className="text-xs py-0.5 px-2 h-5 font-mono font-bold">
+                {items.length}
+              </Badge>
+              {isAdmin && (
+                <button
+                  title="Add new item"
+                  onClick={(e) => { e.stopPropagation(); setActiveCatId('all'); setSelectedItem(null); setItemDialogOpen(true); }}
+                  className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-primary/15 hover:text-primary transition-all"
+                >
+                  <Plus size={14} />
+                </button>
+              )}
+            </div>
+          </div>
 
           {categories.map(cat => {
             const itemCount = items.filter(i => i.categoryId === cat.id).length;
@@ -518,35 +720,37 @@ export default function MenuPage() {
 
                 <div className="flex items-center gap-1.5 shrink-0">
                   <span className="text-xs opacity-75 font-mono font-bold">{itemCount}</span>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <button className="opacity-0 group-hover:opacity-100 p-1.5 hover:text-foreground rounded-lg transition-opacity">
-                        <MoreVertical size={14} />
-                      </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-36">
-                      <DropdownMenuItem
-                        onClick={() => { setSelectedCat(cat); setCatDialogOpen(true); }}
-                        className="text-xs cursor-pointer py-2"
-                      >
-                        <Pencil size={14} className="mr-2" /> Edit
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        onClick={() => handleDeleteCategory(cat)}
-                        className="text-xs text-destructive focus:text-destructive cursor-pointer py-2"
-                      >
-                        <Trash2 size={14} className="mr-2" /> Delete
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                  {isAdmin && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button className="opacity-0 group-hover:opacity-100 p-1.5 hover:text-foreground rounded-lg transition-opacity">
+                          <MoreVertical size={14} />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-36">
+                        <DropdownMenuItem
+                          onClick={() => { setSelectedCat(cat); setCatDialogOpen(true); }}
+                          className="text-xs cursor-pointer py-2"
+                        >
+                          <Pencil size={14} className="mr-2" /> Edit
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={() => handleDeleteCategory(cat)}
+                          className="text-xs text-destructive focus:text-destructive cursor-pointer py-2"
+                        >
+                          <Trash2 size={14} className="mr-2" /> Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
                 </div>
               </div>
             );
           })}
         </div>
 
-        {categories.length === 0 && (
+        {isAdmin && categories.length === 0 && (
           <div className="p-3.5 border-t border-border/60">
             <Button
               variant="outline"
@@ -562,7 +766,7 @@ export default function MenuPage() {
       </Card>
 
       {/* Main Dishes Grid */}
-      <div className="flex-1 flex flex-col gap-4 min-w-0 overflow-hidden">
+      <div className="flex-1 flex flex-col gap-4 min-w-0">
         {/* Top Search & Actions Bar */}
         <div className="flex items-center justify-between gap-3 flex-shrink-0">
           <div className="relative flex-1 max-w-md">
@@ -575,13 +779,34 @@ export default function MenuPage() {
             />
           </div>
 
-          <Button
-            size="sm"
-            onClick={() => { setSelectedItem(null); setItemDialogOpen(true); }}
-            className="h-11 px-5 gap-2 font-bold text-sm bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl shadow-md shadow-orange-500/20"
-          >
-            <Plus size={16} /> Add Item
-          </Button>
+          {isAdmin && (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setDailyBoardOpen(true)}
+                className="h-11 px-3.5 gap-2 font-bold text-xs sm:text-sm border-primary/30 text-primary hover:bg-primary/10 rounded-xl cursor-pointer"
+                title="Quickly set or adjust today's prices for variable dishes"
+              >
+                <Calendar size={16} />
+                <span className="hidden sm:inline">Daily Price Board</span>
+                <span className="sm:hidden">Daily Rates</span>
+                {variableItemsCount > 0 && (
+                  <Badge className="bg-primary text-primary-foreground h-5 px-1.5 text-[10px] font-bold">
+                    {variableItemsCount}
+                  </Badge>
+                )}
+              </Button>
+
+              <Button
+                size="sm"
+                onClick={() => { setSelectedItem(null); setItemDialogOpen(true); }}
+                className="h-11 px-5 gap-2 font-bold text-sm bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl shadow-md shadow-orange-500/20 cursor-pointer"
+              >
+                <Plus size={16} /> Add Item
+              </Button>
+            </div>
+          )}
         </div>
 
         {/* Food Items Grid */}
@@ -592,27 +817,31 @@ export default function MenuPage() {
               {search ? 'No items match your search' : 'No items in this category yet'}
             </p>
             <p className="text-xs text-muted-foreground mt-1 max-w-sm">
-              Add your first dish to this category to display it on the POS menu.
+              {isAdmin
+                ? 'Add your first dish to this category to display it on the POS menu.'
+                : 'No dishes are available here yet.'}
             </p>
-            <Button
-              size="sm"
-              className="mt-5 h-11 px-5 font-bold rounded-xl gap-2 bg-primary text-primary-foreground"
-              onClick={() => { setSelectedItem(null); setItemDialogOpen(true); }}
-            >
-              <Plus size={16} /> Add First Item
-            </Button>
+            {isAdmin && (
+              <Button
+                size="sm"
+                className="mt-5 h-11 px-5 font-bold rounded-xl gap-2 bg-primary text-primary-foreground"
+                onClick={() => { setSelectedItem(null); setItemDialogOpen(true); }}
+              >
+                <Plus size={16} /> Add First Item
+              </Button>
+            )}
           </Card>
         ) : (
-          <div className="flex-1 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 sm:gap-5 pr-1 content-start pb-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 sm:gap-5 pb-6">
             {filteredItems.map(item => (
               <Card
                 key={item.id}
-                className={`overflow-hidden border-border/80 bg-card/80 hover:border-primary/50 transition-all hover:-translate-y-1 hover:shadow-lg flex flex-col justify-between group rounded-2xl ${
+                className={`overflow-hidden border-border/80 bg-card/80 hover:border-primary/50 transition-all hover:-translate-y-1 hover:shadow-lg flex flex-col group rounded-2xl ${
                   !item.isAvailable ? 'opacity-60' : ''
                 }`}
               >
                 {/* Image & Veg badge */}
-                <div className="relative h-36 sm:h-40 bg-muted/40 overflow-hidden flex items-center justify-center">
+                <div className="relative h-36 sm:h-40 bg-muted/40 overflow-hidden flex items-center justify-center flex-shrink-0">
                   {item.imageUrl ? (
                     <img src={item.imageUrl} alt={item.name} className="h-full w-full object-cover transition-transform group-hover:scale-105 duration-200" />
                   ) : (
@@ -626,6 +855,15 @@ export default function MenuPage() {
                   >
                     {item.isVeg ? 'VEG' : 'NON-VEG'}
                   </Badge>
+
+                  {item.isVariablePrice && (
+                    <Badge
+                      className="absolute top-2.5 right-2.5 text-[9px] font-extrabold py-0.5 px-2 bg-amber-500/90 text-black border-none shadow-sm rounded-md"
+                    >
+                      VARIABLE RATE
+                    </Badge>
+                  )}
+
                   {!item.isAvailable && (
                     <div className="absolute inset-0 bg-background/85 backdrop-blur-2xs flex items-center justify-center text-xs font-black text-destructive uppercase tracking-widest">
                       Unavailable
@@ -634,11 +872,22 @@ export default function MenuPage() {
                 </div>
 
                 {/* Content */}
-                <CardContent className="p-4 flex-1 flex flex-col justify-between space-y-3">
+                <CardContent className="p-4 flex flex-col justify-between gap-3">
                   <div>
                     <span className="text-[11px] font-bold text-primary uppercase tracking-wider block">
                       {item.categoryName}
                     </span>
+                    {item.kitchenStationId && (() => {
+                      const station = kitchenStations.find(s => s.id === item.kitchenStationId);
+                      return station ? (
+                        <span
+                          className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md mt-0.5"
+                          style={{ backgroundColor: station.color + '25', color: station.color }}
+                        >
+                          <ChefHat size={9} /> {station.name}
+                        </span>
+                      ) : null;
+                    })()}
                     <h4 className="text-base font-bold text-foreground line-clamp-1 mt-0.5">{item.name}</h4>
                     {item.description && (
                       <p className="text-xs text-muted-foreground line-clamp-2 mt-1 leading-relaxed">{item.description}</p>
@@ -646,7 +895,14 @@ export default function MenuPage() {
                   </div>
 
                   <div className="flex items-center justify-between pt-2 border-t border-border/50">
-                    <span className="text-xl font-black text-foreground">₹{item.price.toFixed(2)}</span>
+                    <div className="flex flex-col">
+                      <span className="text-xl font-black text-foreground">₹{item.price.toFixed(2)}</span>
+                      {item.isVariablePrice && (
+                        <span className="text-[10px] font-bold text-primary flex items-center gap-1 mt-0.5">
+                          <TrendingUp size={11} /> Today: ₹{(item.effectivePrice ?? item.price).toFixed(2)}
+                        </span>
+                      )}
+                    </div>
                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-semibold">
                       <Clock size={13} />
                       <span>{item.preparationTime}m</span>
@@ -682,7 +938,7 @@ export default function MenuPage() {
                       size="icon"
                       className="h-8 w-8 text-muted-foreground hover:text-foreground rounded-lg"
                       onClick={() => { setSelectedItem(item); setItemDialogOpen(true); }}
-                      title="Edit dish"
+                      title="Edit dish details & day rates"
                     >
                       <Pencil size={14} />
                     </Button>
@@ -703,21 +959,32 @@ export default function MenuPage() {
         )}
       </div>
 
-      {/* Category Dialog */}
-      <CategoryDialog
-        open={catDialogOpen}
-        category={selectedCat}
-        onClose={() => { setCatDialogOpen(false); setSelectedCat(null); }}
-      />
+      <>
+        {/* Category Dialog */}
+        <CategoryDialog
+          open={catDialogOpen}
+          category={selectedCat}
+          onClose={() => { setCatDialogOpen(false); setSelectedCat(null); }}
+        />
 
-      {/* Item Dialog */}
-      <ItemDialog
-        open={itemDialogOpen}
-        item={selectedItem}
-        categories={categories}
-        activeCategoryId={activeCatId}
-        onClose={() => { setItemDialogOpen(false); setSelectedItem(null); }}
-      />
+        {/* Item Dialog */}
+        <ItemDialog
+          open={itemDialogOpen}
+          item={selectedItem}
+          categories={categories}
+          activeCategoryId={activeCatId}
+          kitchenStations={kitchenStations}
+          onClose={() => { setItemDialogOpen(false); setSelectedItem(null); }}
+        />
+
+        {/* Daily Price Board Modal */}
+        <DailyPriceBoardModal
+          open={dailyBoardOpen}
+          onClose={() => setDailyBoardOpen(false)}
+          onPricesUpdated={() => fetchMenuItems().then(setItems).catch(console.error)}
+        />
+      </>
+    </div>
     </div>
   );
 }

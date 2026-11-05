@@ -4,7 +4,9 @@ import * as menuService from './menu.service';
 import {
   createCategorySchema, updateCategorySchema,
   createMenuItemSchema, updateMenuItemSchema,
+  bulkUpdateDailyPricesSchema,
 } from './menu.schema';
+
 
 // ── Categories ─────────────────────────────────────────────────────────────
 
@@ -131,3 +133,59 @@ export async function uploadImage(req: Request, res: Response) {
   const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${safeName}`;
   res.json({ success: true, url: fileUrl });
 }
+
+export async function getDailyPriceBoard(_req: Request, res: Response) {
+  const data = await menuService.getDailyPriceBoard();
+  res.json({ success: true, data });
+}
+
+export async function bulkUpdateDailyPrices(req: Request, res: Response) {
+  const input = bulkUpdateDailyPricesSchema.parse(req.body);
+  const data = await menuService.bulkUpdateDailyPrices(input);
+  const io = req.app.get('io');
+  if (io) {
+    io.emit('menu:dailyPricesUpdated', { items: data });
+    io.emit('menu:updated', { action: 'dailyPricesUpdated' });
+  }
+  res.json({ success: true, data });
+}
+
+// ── Bulk CSV import ──────────────────────────────────────────────────────────
+/**
+ * Accepts an array of rows parsed from CSV on the frontend.
+ * Each row must have: category, name, price (and optionally: description, isVeg, preparationTime)
+ * Categories are auto-created if they don't exist.
+ */
+export async function bulkImportMenu(req: Request, res: Response) {
+  const rows: Array<{
+    category: string;
+    name: string;
+    price: number;
+    description?: string;
+    isVeg?: boolean;
+    preparationTime?: number;
+  }> = req.body.rows;
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    res.status(400).json({ success: false, message: 'rows array is required' });
+    return;
+  }
+
+  const result = await menuService.bulkImportMenu(rows);
+  const io = req.app.get('io');
+  if (io) io.emit('menu:updated', { action: 'bulkImport' });
+  res.status(201).json({ success: true, data: result });
+}
+
+// ── Reset / clear all demo menu data ─────────────────────────────────────────
+/**
+ * Deletes ALL menu items and categories (but preserves orders/payments history).
+ * Intended for use before going live with the real menu.
+ */
+export async function resetMenuData(_req: Request, res: Response) {
+  await menuService.resetMenuData();
+  const io = _req.app.get('io');
+  if (io) io.emit('menu:updated', { action: 'reset' });
+  res.json({ success: true, message: 'All menu items and categories deleted' });
+}
+

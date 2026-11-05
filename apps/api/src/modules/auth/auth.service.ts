@@ -124,8 +124,10 @@ async function _issueTokens(user: { id: string; email: string; role: string; nam
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + 7);
 
-  await prisma.refreshToken.create({
-    data: { token: refreshToken, userId: user.id, expiresAt },
+  await prisma.refreshToken.upsert({
+    where: { token: refreshToken },
+    create: { token: refreshToken, userId: user.id, expiresAt },
+    update: { userId: user.id, expiresAt },
   });
 
   return {

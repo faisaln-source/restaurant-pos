@@ -9,7 +9,38 @@ import type { MenuCategory, MenuItem } from '../lib/types';
 
 // Prisma Decimal fields come back as strings over JSON — coerce to number
 function normalizeMenuItem(item: MenuItem): MenuItem {
-  return { ...item, price: Number(item.price) };
+  const basePrice = Number(item.price);
+  const dailyPrice = item.dailyPrice != null ? Number(item.dailyPrice) : null;
+  const effectivePrice = item.effectivePrice != null ? Number(item.effectivePrice) : (dailyPrice ?? basePrice);
+  return {
+    ...item,
+    price: basePrice,
+    dailyPrice,
+    effectivePrice,
+  };
+}
+
+export async function fetchDailyPriceBoard(): Promise<{
+  date: string;
+  dayName: string;
+  items: MenuItem[];
+}> {
+  const res = await api.get<{
+    date: string;
+    dayName: string;
+    items: MenuItem[];
+  }>('/api/menu/daily-board');
+  return {
+    ...res,
+    items: res.items.map(normalizeMenuItem),
+  };
+}
+
+export async function updateDailyPriceBoard(
+  updates: { id: string; dailyPrice: number }[]
+): Promise<MenuItem[]> {
+  const res = await api.post<MenuItem[]>('/api/menu/daily-board', { updates });
+  return res.map(normalizeMenuItem);
 }
 
 export async function fetchCategories(): Promise<MenuCategory[]> {
@@ -77,6 +108,11 @@ export async function toggleItemAvailability(id: string, isAvailable: boolean): 
   await api.patch(`/api/menu/items/${id}/availability`, { isAvailable });
 }
 
+export async function toggleVariablePrice(id: string, isVariablePrice: boolean): Promise<MenuItem> {
+  const item = await api.patch<MenuItem>(`/api/menu/items/${id}`, { isVariablePrice });
+  return normalizeMenuItem(item);
+}
+
 // ── Image Upload ───────────────────────────────────────────────────────────
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { signInAnonymously } from 'firebase/auth';
@@ -101,13 +137,16 @@ async function uploadToBackend(file: File): Promise<string> {
 
 /**
  * Uploads menu image to Firebase Storage with real-time progress callbacks.
- * If Firebase Storage is unavailable or restricted, seamlessly falls back to the server.
+ * Falls back to the server-side upload endpoint if Firebase is unavailable,
+ * misconfigured, or times out (e.g. Storage rules deny anonymous uploads).
  */
 export async function uploadMenuImage(
   file: File,
   itemId: string,
   onProgress?: (percent: number) => void
 ): Promise<string> {
+  let uploadTask: ReturnType<typeof uploadBytesResumable> | null = null;
+
   try {
     // Ensure auth session exists if required by Firebase rules
     if (!auth.currentUser) {
@@ -119,37 +158,47 @@ export async function uploadMenuImage(
     const fileName = `menu-items/${cleanId}_${Date.now()}.${fileExt}`;
     const storageRef = ref(storage, fileName);
 
-    const uploadTask = uploadBytesResumable(storageRef, file);
+    uploadTask = uploadBytesResumable(storageRef, file);
 
-    const downloadUrl = await new Promise<string>((resolve, reject) => {
-      uploadTask.on(
-        'state_changed',
-        (snapshot) => {
-          if (snapshot.totalBytes > 0) {
-            const progress = Math.round(
-              (snapshot.bytesTransferred / snapshot.totalBytes) * 100
-            );
-            if (onProgress) onProgress(progress);
+    // Race the upload against a timeout — Firebase can hang silently when
+    // Storage rules deny anonymous uploads (no error event, just 0% forever).
+    const downloadUrl = await Promise.race([
+      new Promise<string>((resolve, reject) => {
+        uploadTask!.on(
+          'state_changed',
+          (snapshot) => {
+            if (snapshot.totalBytes > 0) {
+              const progress = Math.round(
+                (snapshot.bytesTransferred / snapshot.totalBytes) * 100
+              );
+              if (onProgress) onProgress(progress);
+            }
+          },
+          (error) => reject(error),
+          async () => {
+            try {
+              const url = await getDownloadURL(uploadTask!.snapshot.ref);
+              if (onProgress) onProgress(100);
+              resolve(url);
+            } catch (err) {
+              reject(err);
+            }
           }
-        },
-        (error) => {
-          reject(error);
-        },
-        async () => {
-          try {
-            const url = await getDownloadURL(uploadTask.snapshot.ref);
-            if (onProgress) onProgress(100);
-            resolve(url);
-          } catch (err) {
-            reject(err);
-          }
-        }
-      );
-    });
+        );
+      }),
+      // Timeout: if Firebase hasn't progressed in 6s, give up and use backend.
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Firebase upload timed out')), 6000)
+      ),
+    ]);
 
     return downloadUrl;
   } catch (firebaseErr) {
-    console.warn('Firebase Storage upload failed, using server upload fallback:', firebaseErr);
+    // Cancel the Firebase task if it's still running (e.g. after timeout)
+    if (uploadTask) {
+      try { uploadTask.cancel(); } catch { /* ignore cancel errors */ }
+    }
+    console.warn('Firebase Storage upload failed/timed out, using server upload fallback:', firebaseErr);
     if (onProgress) onProgress(40);
     const backendUrl = await uploadToBackend(file);
     if (onProgress) onProgress(100);

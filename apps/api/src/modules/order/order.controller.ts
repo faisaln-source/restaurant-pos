@@ -3,8 +3,9 @@ import { param } from '../../lib/params';
 import * as orderService from './order.service';
 import {
   createOrderSchema, addItemsSchema,
-  updateOrderStatusSchema, updateItemStatusSchema,
+  updateOrderStatusSchema, updateItemStatusSchema, extraChargesSchema,
 } from './order.schema';
+
 
 export async function listOrders(req: Request, res: Response) {
   const q = req.query;
@@ -38,7 +39,19 @@ export async function createOrder(req: Request, res: Response) {
 
   const io = req.app.get('io');
   if (io) {
+    // Broadcast to all (KDS "All Kitchens" view + POS)
     io.emit('order:new', data);
+
+    // Also emit to each per-station room that has relevant items in this order
+    const stationIds = new Set<string>();
+    for (const item of data.items) {
+      const stationId = (item.menuItem as any)?.kitchenStationId;
+      if (stationId) stationIds.add(stationId);
+    }
+    for (const stationId of stationIds) {
+      io.to(`station:${stationId}`).emit('order:new', data);
+    }
+
     if (data.tableId) {
       io.emit('table:updated', { tableId: data.tableId, status: 'OCCUPIED' });
     }
@@ -54,6 +67,16 @@ export async function addItems(req: Request, res: Response) {
   const io = req.app.get('io');
   if (io) {
     io.emit('order:updated', data);
+
+    // Notify per-station rooms about the updated order
+    const stationIds = new Set<string>();
+    for (const item of data.items) {
+      const stationId = (item.menuItem as any)?.kitchenStationId;
+      if (stationId) stationIds.add(stationId);
+    }
+    for (const stationId of stationIds) {
+      io.to(`station:${stationId}`).emit('order:updated', data);
+    }
   }
 
   res.json({ success: true, data });
@@ -99,6 +122,18 @@ export async function voidOrder(req: Request, res: Response) {
   if (io) {
     io.to('kds').emit('order:voided', data);
     io.to('pos').emit('order:voided', data);
+  }
+
+  res.json({ success: true, data });
+}
+
+export async function updateExtraCharges(req: Request, res: Response) {
+  const { extraCharges } = extraChargesSchema.parse(req.body);
+  const data = await orderService.updateExtraCharges(param(req, 'id'), extraCharges);
+
+  const io = req.app.get('io');
+  if (io) {
+    io.emit('order:updated', data);
   }
 
   res.json({ success: true, data });

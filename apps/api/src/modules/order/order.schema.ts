@@ -4,6 +4,7 @@ export const orderItemSchema = z.object({
   menuItemId: z.string().min(1),
   quantity: z.number().int().min(1, 'Quantity must be at least 1'),
   note: z.string().max(500).optional().nullable(),
+  seatNumber: z.number().int().min(1).optional().nullable(),
 });
 
 export const createOrderSchema = z.object({
@@ -24,6 +25,11 @@ export const updateOrderStatusSchema = z.object({
 
 export const updateItemStatusSchema = z.object({
   status: z.enum(['PENDING', 'PREPARING', 'READY', 'SERVED', 'CANCELLED']),
+});
+
+export const extraChargesSchema = z.object({
+  extraCharges: z.number().min(0, 'Extra charges must be non-negative'),
+  label: z.string().max(100).optional(), // optional description e.g. "Cover Charge"
 });
 
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;

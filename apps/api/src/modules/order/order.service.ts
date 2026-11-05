@@ -3,6 +3,10 @@ import { notFoundError, badRequest } from '../../lib/errors';
 import type { CreateOrderInput, OrderItemInput } from './order.schema';
 import type { OrderStatus, OrderItemStatus } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
+import { calculateEffectiveItemPrice } from '../menu/pricing.utils';
+import { computeSectionCharges } from '../section-charge/section-charge.service';
+
+
 
 // Tax rate — in production this would come from settings
 const TAX_RATE = 0.05; // 5%
@@ -78,11 +82,9 @@ export async function listOrders(filters?: {
   to?: Date;
   activeOnly?: boolean;
 }) {
-  if (filters?.tableId) {
-    await consolidateTableOrders(filters.tableId);
-  } else if (filters?.activeOnly) {
-    await consolidateTableOrders();
-  }
+  // NOTE: consolidateTableOrders intentionally NOT called here.
+  // Each order placed for a table belongs to a distinct customer group and
+  // must be billed separately. Merging them would combine unrelated guests.
 
   const where: Record<string, unknown> = {};
 
@@ -107,7 +109,7 @@ export async function listOrders(filters?: {
       table: { select: { id: true, name: true } },
       user: { select: { id: true, name: true } },
       items: {
-        include: { menuItem: { select: { id: true, name: true, isVeg: true } } },
+        include: { menuItem: { select: { id: true, name: true, isVeg: true, kitchenStationId: true } } },
       },
       payment: true,
     },
@@ -131,7 +133,7 @@ export async function getOrderById(id: string) {
       table: { select: { id: true, name: true } },
       user: { select: { id: true, name: true } },
       items: {
-        include: { menuItem: { select: { id: true, name: true, isVeg: true, price: true } } },
+        include: { menuItem: { select: { id: true, name: true, isVeg: true, price: true, kitchenStationId: true } } },
         orderBy: { createdAt: 'asc' },
       },
       payment: true,
@@ -149,26 +151,9 @@ export async function createOrder(input: CreateOrderInput, userId: string) {
     throw badRequest('Table is required for dine-in orders');
   }
 
-  // If dine-in and table already has an active order, append to existing order so it generates as ONE SINGLE BILL
-  if (input.type === 'DINE_IN' && input.tableId) {
-    const existingOrder = await prisma.order.findFirst({
-      where: {
-        tableId: input.tableId,
-        status: { notIn: ['COMPLETED', 'CANCELLED', 'VOIDED'] },
-      },
-      orderBy: { createdAt: 'asc' },
-    });
-
-    if (existingOrder) {
-      if (input.customerName && !existingOrder.customerName) {
-        await prisma.order.update({
-          where: { id: existingOrder.id },
-          data: { customerName: input.customerName },
-        });
-      }
-      return addItemsToOrder(existingOrder.id, input.items);
-    }
-  }
+  // Each call to createOrder always creates a NEW order.
+  // Multiple customers can share a table — each gets their own separate order/bill.
+  // The seat picker on the frontend ensures the waiter assigns the correct seats.
 
   // Lookup menu items and calculate prices
   const menuItemIds = input.items.map(i => i.menuItemId);
@@ -190,14 +175,15 @@ export async function createOrder(input: CreateOrderInput, userId: string) {
   // Build order items with calculated prices
   const orderItems = input.items.map(item => {
     const mi = menuItemMap.get(item.menuItemId)!;
-    const unitPrice = mi.price;
-    const totalPrice = mi.price.mul(item.quantity);
+    const unitPrice = calculateEffectiveItemPrice(mi);
+    const totalPrice = unitPrice.mul(item.quantity);
     return {
       menuItemId: item.menuItemId,
       quantity: item.quantity,
       unitPrice,
       totalPrice,
       note: item.note ?? null,
+      seatNumber: (item as any).seatNumber ?? null,
     };
   });
 
@@ -206,7 +192,20 @@ export async function createOrder(input: CreateOrderInput, userId: string) {
     new Decimal(0)
   );
   const taxAmount = subtotal.mul(TAX_RATE);
-  const totalAmount = subtotal.add(taxAmount);
+
+  // Auto-apply floor section charges if this is a dine-in table
+  let floorSection: string | null = null;
+  if (input.tableId && input.type === 'DINE_IN') {
+    const tableRecord = await prisma.table.findUnique({
+      where: { id: input.tableId },
+      select: { floorSection: true },
+    });
+    floorSection = tableRecord?.floorSection ?? null;
+  }
+  const { total: sectionChargesTotal, detail: sectionChargesDetail } =
+    await computeSectionCharges(floorSection, subtotal);
+
+  const totalAmount = subtotal.add(taxAmount).add(sectionChargesTotal);
 
   // Wrap the order number fetch + INSERT in a transaction so the number
   // is reserved atomically. A unique-constraint collision (P2002) surfaces
@@ -225,6 +224,8 @@ export async function createOrder(input: CreateOrderInput, userId: string) {
         note: input.note ?? null,
         subtotal,
         taxAmount,
+        extraCharges: sectionChargesTotal,
+        extraChargesDetail: sectionChargesDetail.length > 0 ? sectionChargesDetail : undefined,
         totalAmount,
         items: { create: orderItems },
       },
@@ -232,7 +233,7 @@ export async function createOrder(input: CreateOrderInput, userId: string) {
         table: { select: { id: true, name: true } },
         user: { select: { id: true, name: true } },
         items: {
-          include: { menuItem: { select: { id: true, name: true, isVeg: true } } },
+          include: { menuItem: { select: { id: true, name: true, isVeg: true, kitchenStationId: true } } },
         },
       },
     });
@@ -268,13 +269,16 @@ export async function addItemsToOrder(orderId: string, items: OrderItemInput[]) 
   const newItems = items.map(item => {
     const mi = menuItemMap.get(item.menuItemId);
     if (!mi) throw badRequest(`Menu item ${item.menuItemId} not found`);
+    const unitPrice = calculateEffectiveItemPrice(mi);
+    const totalPrice = unitPrice.mul(item.quantity);
     return {
       orderId,
       menuItemId: item.menuItemId,
       quantity: item.quantity,
-      unitPrice: mi.price,
-      totalPrice: mi.price.mul(item.quantity),
+      unitPrice,
+      totalPrice,
       note: item.note ?? null,
+      seatNumber: (item as any).seatNumber ?? null,
     };
   });
 
@@ -316,7 +320,7 @@ export async function updateOrderStatus(orderId: string, status: OrderStatus) {
       table: { select: { id: true, name: true } },
       user: { select: { id: true, name: true } },
       items: {
-        include: { menuItem: { select: { id: true, name: true, isVeg: true } } },
+        include: { menuItem: { select: { id: true, name: true, isVeg: true, kitchenStationId: true } } },
       },
     },
   });
@@ -358,7 +362,7 @@ export async function updateOrderItemStatus(
   const updatedItem = await prisma.orderItem.update({
     where: { id: itemId },
     data: { status },
-    include: { menuItem: { select: { id: true, name: true, isVeg: true } } },
+    include: { menuItem: { select: { id: true, name: true, isVeg: true, kitchenStationId: true } } },
   });
 
   // ── Auto-promote order status based on item statuses ──────────────────
@@ -409,7 +413,10 @@ async function _recalculateOrderTotals(orderId: string) {
     new Decimal(0)
   );
   const taxAmount = subtotal.mul(TAX_RATE);
-  const totalAmount = subtotal.add(taxAmount);
+  // Preserve any manually set extra charges on the order
+  const order = await prisma.order.findUnique({ where: { id: orderId }, select: { extraCharges: true } });
+  const extraCharges = order?.extraCharges ?? new Decimal(0);
+  const totalAmount = subtotal.add(taxAmount).add(extraCharges);
 
   return prisma.order.update({
     where: { id: orderId },
@@ -418,7 +425,37 @@ async function _recalculateOrderTotals(orderId: string) {
       table: { select: { id: true, name: true } },
       user: { select: { id: true, name: true } },
       items: {
-        include: { menuItem: { select: { id: true, name: true, isVeg: true } } },
+        include: { menuItem: { select: { id: true, name: true, isVeg: true, kitchenStationId: true } } },
+      },
+    },
+  });
+}
+
+// ── Update extra charges for a session ──────────────────────────────────
+
+export async function updateExtraCharges(orderId: string, extraCharges: number) {
+  const order = await prisma.order.findUnique({ where: { id: orderId } });
+  if (!order) throw notFoundError('Order not found');
+  if (['COMPLETED', 'CANCELLED', 'VOIDED'].includes(order.status)) {
+    throw badRequest('Cannot edit extra charges on a completed/cancelled order');
+  }
+
+  const items = await prisma.orderItem.findMany({
+    where: { orderId, status: { not: 'CANCELLED' } },
+  });
+  const subtotal = items.reduce((sum, i) => sum.add(i.totalPrice), new Decimal(0));
+  const taxAmount = subtotal.mul(TAX_RATE);
+  const extra = new Decimal(extraCharges);
+  const totalAmount = subtotal.add(taxAmount).add(extra);
+
+  return prisma.order.update({
+    where: { id: orderId },
+    data: { extraCharges: extra, totalAmount },
+    include: {
+      table: { select: { id: true, name: true } },
+      user: { select: { id: true, name: true } },
+      items: {
+        include: { menuItem: { select: { id: true, name: true, isVeg: true, kitchenStationId: true } } },
       },
     },
   });
