@@ -77,3 +77,4 @@ export async function hideSplashScreen(): Promise<void> {
     // SplashScreen not available
   }
 }
+

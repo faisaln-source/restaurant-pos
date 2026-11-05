@@ -1,66 +1,118 @@
 use tauri::AppHandle;
-use tauri_plugin_fs::FsExt;
 use std::path::PathBuf;
-use crate::license::{verify_license, VerifyResult};
+use crate::license::{
+    verify_license, daily_license_check, build_check_record,
+    DailyCheckRecord, VerifyResult,
+};
 
-const LICENSE_FILE: &str = "license.key";
+const LICENSE_FILE:       &str = "license.key";
+const DAILY_CHECK_FILE:   &str = "license_check.json";
 
-fn license_path(app: &AppHandle) -> PathBuf {
+// ─── Path helpers ────────────────────────────────────────────────────────────
+
+fn app_data_dir(app: &AppHandle) -> PathBuf {
     app.path().app_data_dir()
-        .expect("Could not get app data dir")
-        .join(LICENSE_FILE)
+        .expect("Could not resolve app data directory")
 }
 
-/// Tauri command: verify a license key string (does not save it)
+fn license_path(app: &AppHandle) -> PathBuf {
+    app_data_dir(app).join(LICENSE_FILE)
+}
+
+fn check_record_path(app: &AppHandle) -> PathBuf {
+    app_data_dir(app).join(DAILY_CHECK_FILE)
+}
+
+fn ensure_app_dir(app: &AppHandle) -> Result<(), String> {
+    std::fs::create_dir_all(app_data_dir(app))
+        .map_err(|e| format!("Could not create app data directory: {}", e))
+}
+
+// ─── Internal helpers ────────────────────────────────────────────────────────
+
+fn read_key(app: &AppHandle) -> Option<String> {
+    std::fs::read_to_string(license_path(app))
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
+fn read_check_record(app: &AppHandle) -> Option<DailyCheckRecord> {
+    let raw = std::fs::read_to_string(check_record_path(app)).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn write_check_record(app: &AppHandle, record: &DailyCheckRecord) {
+    if let Ok(json) = serde_json::to_string_pretty(record) {
+        let _ = std::fs::write(check_record_path(app), json);
+    }
+}
+
+// ─── Tauri commands ──────────────────────────────────────────────────────────
+
+/// Called on every app startup.
+/// Runs the full daily license check including clock-tamper detection.
+/// Writes an updated check record if the check passes.
+#[tauri::command]
+pub fn get_license_info(app: AppHandle) -> VerifyResult {
+    let key = match read_key(&app) {
+        Some(k) => k,
+        None => return VerifyResult {
+            valid: false,
+            payload: None,
+            clock_tampered: false,
+            reason: Some("No license file found. Please activate your license.".to_string()),
+            days_remaining: None,
+        },
+    };
+
+    let existing_record = read_check_record(&app);
+    let (result, new_record) = daily_license_check(&key, existing_record);
+
+    // Persist the updated check record whenever the check passes
+    if result.valid {
+        if let Some(record) = new_record {
+            let _ = ensure_app_dir(&app);
+            write_check_record(&app, &record);
+        }
+    }
+
+    result
+}
+
+/// Verify a key string without saving it (used for preview in the UI).
 #[tauri::command]
 pub fn verify_license_key(key: String) -> VerifyResult {
     verify_license(&key)
 }
 
-/// Tauri command: verify and save a license key to disk
+/// Verify a key, save it to disk, and write an initial daily-check record.
 #[tauri::command]
 pub fn save_license_key(app: AppHandle, key: String) -> Result<VerifyResult, String> {
-    let result = verify_license(&key);
+    let result = verify_license(key.trim());
     if !result.valid {
         return Ok(result);
     }
 
-    let path = license_path(&app);
+    ensure_app_dir(&app)?;
 
-    // Ensure app data directory exists
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Could not create app data dir: {}", e))?;
-    }
+    // Save the license key
+    std::fs::write(license_path(&app), key.trim())
+        .map_err(|e| format!("Could not save license file: {}", e))?;
 
-    std::fs::write(&path, key.trim())
-        .map_err(|e| format!("Could not save license: {}", e))?;
+    // Write an initial daily-check record for today
+    let license_id = result.payload.as_ref()
+        .map(|p| p.license_id.as_str())
+        .unwrap_or("");
+    let today = chrono::Local::now().naive_local().date()
+        .format("%Y-%m-%d").to_string();
+    let record = build_check_record(license_id, &today);
+    write_check_record(&app, &record);
 
     Ok(result)
 }
 
-/// Tauri command: read and verify the saved license key
-#[tauri::command]
-pub fn get_license_info(app: AppHandle) -> VerifyResult {
-    let path = license_path(&app);
-
-    match std::fs::read_to_string(&path) {
-        Ok(key) => verify_license(key.trim()),
-        Err(_) => crate::license::VerifyResult {
-            valid: false,
-            payload: None,
-            reason: Some("No license file found. Please activate your license.".to_string()),
-            days_remaining: None,
-        },
-    }
-}
-
-/// Tauri command: return the app data directory path
+/// Return the app data directory path (useful for support/diagnostics).
 #[tauri::command]
 pub fn get_app_data_dir(app: AppHandle) -> String {
-    app.path().app_data_dir()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string()
+    app_data_dir(&app).to_string_lossy().to_string()
 }
-

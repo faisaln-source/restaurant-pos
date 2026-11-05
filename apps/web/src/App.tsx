@@ -32,12 +32,21 @@ function App() {
   const [licenseState, setLicenseState] = useState<'unknown' | 'valid' | 'invalid'>(
     isTauri() ? 'unknown' : 'valid', // skip check entirely in browser/web mode
   );
+  const [licenseReason, setLicenseReason]       = useState<string | undefined>();
+  const [clockTampered, setClockTampered]        = useState(false);
 
   useEffect(() => {
     if (!isTauri()) return; // web / mobile: no license gate
     getLicenseInfo().then(result => {
-      setLicenseState(result?.valid ? 'valid' : 'invalid');
+      if (result?.valid) {
+        setLicenseState('valid');
+      } else {
+        setClockTampered(result?.clockTampered ?? false);
+        setLicenseReason(result?.reason ?? undefined);
+        setLicenseState('invalid');
+      }
     }).catch(() => {
+      setLicenseReason('Could not read license. Please re-activate.');
       setLicenseState('invalid');
     });
   }, []);
@@ -96,11 +105,17 @@ function App() {
     );
   }
 
-  // Show license activation screen if running in Tauri and no valid license
+  // Show license screen if running in Tauri and no valid license (or clock tampered)
   if (licenseState === 'invalid') {
     return (
       <LicenseActivationScreen
-        onActivated={(_result: LicenseVerifyResult) => setLicenseState('valid')}
+        clockTampered={clockTampered}
+        initialReason={licenseReason}
+        onActivated={(_result: LicenseVerifyResult) => {
+          setClockTampered(false);
+          setLicenseReason(undefined);
+          setLicenseState('valid');
+        }}
       />
     );
   }

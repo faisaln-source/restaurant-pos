@@ -1,18 +1,21 @@
 /**
- * Tauri bridge — provides type-safe wrappers around Tauri commands.
- * Falls back gracefully when running in a browser (non-Tauri) context.
+ * Tauri bridge — type-safe wrappers around Tauri commands.
+ * Gracefully returns null when running in a browser (non-Tauri) context.
  */
 
-// Check if running inside a Tauri app
-export const isTauri = (): boolean => {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-};
+// ─── Environment detection ───────────────────────────────────────────────────
+
+export const isTauri = (): boolean =>
+  typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface LicensePayload {
   restaurantName: string;
   email: string;
   issuedAt: string;
-  expiresAt: string | null;
+  /** Always set — no lifetime licenses. */
+  expiresAt: string;
   maxDevices: number;
   features: string[];
   licenseId: string;
@@ -22,8 +25,13 @@ export interface LicenseVerifyResult {
   valid: boolean;
   payload?: LicensePayload;
   reason?: string;
+  /** Days until expiry. null = unknown / check failed before expiry was read. */
   daysRemaining?: number | null;
+  /** True when system clock was rolled back to avoid expiry. */
+  clockTampered: boolean;
 }
+
+// ─── Tauri invoke helper ─────────────────────────────────────────────────────
 
 type TauriInvoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
 
@@ -33,9 +41,13 @@ function getTauriInvoke(): TauriInvoke | null {
   return (window as any).__TAURI_INTERNALS__?.invoke ?? null;
 }
 
+// ─── Public API ──────────────────────────────────────────────────────────────
+
 /**
- * Read and verify the saved license key from disk.
- * Returns null when not running in Tauri.
+ * Run the daily license check on startup.
+ * Verifies HMAC, expiry, and clock-tamper detection.
+ * Writes an updated check record if valid.
+ * Returns null when not in Tauri.
  */
 export async function getLicenseInfo(): Promise<LicenseVerifyResult | null> {
   const invoke = getTauriInvoke();
@@ -44,7 +56,7 @@ export async function getLicenseInfo(): Promise<LicenseVerifyResult | null> {
 }
 
 /**
- * Verify a license key string without saving it.
+ * Verify a license key string without saving it (UI preview step).
  */
 export async function verifyLicenseKey(key: string): Promise<LicenseVerifyResult | null> {
   const invoke = getTauriInvoke();
@@ -53,7 +65,7 @@ export async function verifyLicenseKey(key: string): Promise<LicenseVerifyResult
 }
 
 /**
- * Verify and save a license key to disk.
+ * Verify and save a license key to disk, then write initial daily-check record.
  */
 export async function saveLicenseKey(key: string): Promise<LicenseVerifyResult | null> {
   const invoke = getTauriInvoke();
@@ -62,11 +74,10 @@ export async function saveLicenseKey(key: string): Promise<LicenseVerifyResult |
 }
 
 /**
- * Get the app data directory path.
+ * Get the app data directory path (for support diagnostics).
  */
 export async function getAppDataDir(): Promise<string | null> {
   const invoke = getTauriInvoke();
   if (!invoke) return null;
   return invoke('get_app_data_dir') as Promise<string>;
 }
-
