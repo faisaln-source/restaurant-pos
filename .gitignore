@@ -4,3 +4,17 @@ dist/
 .env.local
 *.log
 uploads/
+
+# Tauri build artifacts
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/WixTools/
+apps/desktop/src-tauri/gen/
+
+# Capacitor generated native projects (optional — commit if you want to track native code)
+# apps/web/android/
+# apps/web/ios/
+
+# License package build
+packages/license/dist/
+packages/license/node_modules/
+

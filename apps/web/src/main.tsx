@@ -4,6 +4,10 @@ import { BrowserRouter } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import App from './App.tsx';
 import './index.css';
+import { hideSplashScreen } from './lib/capacitor';
+
+// Hide the native splash screen after the React app mounts
+hideSplashScreen();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

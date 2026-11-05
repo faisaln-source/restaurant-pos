@@ -3,8 +3,10 @@ import {
   Settings, User, Lock, Bell, Store,
   Save, Shield, KeyRound, PlusCircle, Trash2, Building2, Percent,
   ChefHat, Pencil, Check, X, UtensilsCrossed, ChevronDown, ChevronRight, Search,
-  Upload, AlertTriangle, FileSpreadsheet, RefreshCw,
+  Upload, AlertTriangle, FileSpreadsheet, RefreshCw, Smartphone, Server, ShieldCheck,
 } from 'lucide-react';
+import { isCapacitor, getApiBaseUrl } from '../lib/capacitor';
+import { isTauri, getLicenseInfo, LicensePayload } from '../lib/tauri';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -980,6 +982,12 @@ export default function SettingsPage() {
         {/* ── Menu Data Management ────────────────────────────────────────── */}
         <MenuDataCard />
 
+        {/* ── Mobile / Desktop App Settings ───────────────────────────────── */}
+        <MobileServerCard />
+
+        {/* ── License Information ──────────────────────────────────────────── */}
+        <LicenseInfoCard />
+
       </div>
     </div>
   );
@@ -1189,6 +1197,147 @@ function MenuDataCard() {
             )}
           </div>
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+
+// ── Mobile / Desktop Server URL Card ────────────────────────────────────────
+function MobileServerCard() {
+  const [serverUrl, setServerUrl] = useState(() => localStorage.getItem('pos_server_url') ?? '');
+  const [saved, setSaved] = useState(false);
+
+  const handleSave = () => {
+    const url = serverUrl.trim().replace(/\/$/, '');
+    if (url) {
+      localStorage.setItem('pos_server_url', url);
+    } else {
+      localStorage.removeItem('pos_server_url');
+    }
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  // Only show on mobile (Capacitor) or if user explicitly has a custom URL set
+  if (!isCapacitor() && !serverUrl) return null;
+
+  return (
+    <Card className="border-border/80">
+      <CardHeader>
+        <div className="flex items-center gap-3">
+          <div className="h-10 w-10 rounded-xl bg-sky-500/15 ring-1 ring-sky-500/25 flex items-center justify-center">
+            <Smartphone size={18} className="text-sky-400" />
+          </div>
+          <div>
+            <CardTitle className="text-base font-bold">App Server Connection</CardTitle>
+            <CardDescription className="text-xs mt-0.5">
+              Configure the API server URL for this device
+            </CardDescription>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-1.5">
+          <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider flex items-center gap-2">
+            <Server size={12} /> API Server URL
+          </label>
+          <div className="flex gap-2">
+            <Input
+              value={serverUrl}
+              onChange={e => setServerUrl(e.target.value)}
+              placeholder="http://192.168.1.100:4000"
+              className="font-mono text-sm"
+            />
+            <Button onClick={handleSave} className="gap-2 font-bold shrink-0 cursor-pointer">
+              {saved ? <Check size={14} /> : <Save size={14} />}
+              {saved ? 'Saved!' : 'Save'}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Current: <span className="font-mono font-semibold">{getApiBaseUrl()}</span>
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Leave blank to use the default. For Android emulator use <span className="font-mono">http://10.0.2.2:4000</span>
+          </p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── License Information Card ─────────────────────────────────────────────────
+function LicenseInfoCard() {
+  const [license, setLicense] = useState<LicensePayload | null>(null);
+  const [daysRemaining, setDaysRemaining] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!isTauri()) { setLoading(false); return; }
+    getLicenseInfo().then(result => {
+      if (result?.valid && result.payload) {
+        setLicense(result.payload);
+        setDaysRemaining(result.daysRemaining ?? null);
+      }
+    }).finally(() => setLoading(false));
+  }, []);
+
+  // Only show in Tauri desktop mode
+  if (!isTauri()) return null;
+  if (loading) return null;
+
+  return (
+    <Card className="border-border/80">
+      <CardHeader>
+        <div className="flex items-center gap-3">
+          <div className="h-10 w-10 rounded-xl bg-emerald-500/15 ring-1 ring-emerald-500/25 flex items-center justify-center">
+            <ShieldCheck size={18} className="text-emerald-400" />
+          </div>
+          <div>
+            <CardTitle className="text-base font-bold">License Information</CardTitle>
+            <CardDescription className="text-xs mt-0.5">Your software license details</CardDescription>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {license ? (
+          <div className="space-y-3 text-sm">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2">
+              <div>
+                <p className="text-xs text-muted-foreground font-semibold uppercase tracking-wider">Restaurant</p>
+                <p className="font-semibold mt-0.5">{license.restaurantName}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground font-semibold uppercase tracking-wider">License ID</p>
+                <p className="font-mono font-semibold mt-0.5">{license.licenseId}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground font-semibold uppercase tracking-wider">Expires</p>
+                <p className="font-semibold mt-0.5">
+                  {license.expiresAt
+                    ? `${license.expiresAt} (${daysRemaining ?? '?'} days left)`
+                    : 'Lifetime'}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground font-semibold uppercase tracking-wider">Terminals</p>
+                <p className="font-semibold mt-0.5">{license.maxDevices}</p>
+              </div>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground font-semibold uppercase tracking-wider mb-1.5">Features</p>
+              <div className="flex flex-wrap gap-1.5">
+                {license.features.map(f => (
+                  <span key={f} className="text-xs bg-primary/15 text-primary px-2.5 py-1 rounded-lg font-bold capitalize">
+                    {f}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">No valid license found.</p>
+        )}
       </CardContent>
     </Card>
   );

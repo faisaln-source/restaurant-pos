@@ -7,6 +7,12 @@
     "dev:web": "cd apps/web && npm run dev",
     "build:api": "npm --prefix apps/api run build",
     "start:api": "npm --prefix apps/api run start",
-    "build:web": "npm --prefix apps/web run build"
+    "build:web": "npm --prefix apps/web run build",
+    "build:desktop": "cd apps/desktop && npm run build",
+    "dev:desktop": "cd apps/desktop && npm run dev",
+    "mobile:android": "npm --prefix apps/web run cap:android",
+    "mobile:ios": "npm --prefix apps/web run cap:ios",
+    "mobile:sync": "npm --prefix apps/web run cap:sync",
+    "license:generate": "cd packages/license && node dist/cli.js"
   }
 }

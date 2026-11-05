@@ -1,8 +1,10 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { useAuthStore } from './store/authStore';
 import { tryRestoreSession } from './services/auth.service';
 import { connectSocket, disconnectSocket } from './lib/socket';
+import { isTauri, getLicenseInfo, LicenseVerifyResult } from './lib/tauri';
+import { LicenseActivationScreen } from './components/LicenseActivationScreen';
 
 // Pages
 import LoginPage from './pages/LoginPage';
@@ -24,6 +26,21 @@ import RoleGuard from './components/auth/RoleGuard';
 function App() {
   const { setProfile, setLoading, setAuthenticated, reset } = useAuthStore();
   const navigate = useNavigate();
+
+  // ── License gate (Tauri desktop only) ──────────────────────────────────
+  // 'unknown' = still checking, 'valid' = licensed, 'invalid' = show activation
+  const [licenseState, setLicenseState] = useState<'unknown' | 'valid' | 'invalid'>(
+    isTauri() ? 'unknown' : 'valid', // skip check entirely in browser/web mode
+  );
+
+  useEffect(() => {
+    if (!isTauri()) return; // web / mobile: no license gate
+    getLicenseInfo().then(result => {
+      setLicenseState(result?.valid ? 'valid' : 'invalid');
+    }).catch(() => {
+      setLicenseState('invalid');
+    });
+  }, []);
 
   // Listen for session expiry events fired by the API client
   useEffect(() => {
@@ -69,6 +86,24 @@ function App() {
       disconnectSocket();
     };
   }, [setProfile, setLoading, setAuthenticated]);
+
+  // Show nothing while checking license (avoids flash)
+  if (licenseState === 'unknown') {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  // Show license activation screen if running in Tauri and no valid license
+  if (licenseState === 'invalid') {
+    return (
+      <LicenseActivationScreen
+        onActivated={(_result: LicenseVerifyResult) => setLicenseState('valid')}
+      />
+    );
+  }
 
   return (
     <Routes>
