@@ -7,6 +7,10 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
+import { loadSidecarConfig } from './lib/sidecar-config';
+
+// Load sidecar config BEFORE anything that reads env vars (Prisma, JWT, etc.)
+loadSidecarConfig();
 
 import { errorHandler } from './middleware/errorHandler';
 import { notFound } from './middleware/notFound';
@@ -46,6 +50,8 @@ const isOriginAllowed = (origin?: string): boolean => {
   if (/^https:\/\/.*\.trycloudflare\.com$/.test(clean)) return true;
   if (/^https:\/\/.*\.loca\.lt$/.test(clean)) return true;
   if (/^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/.test(clean)) return true;
+  // Allow Tauri desktop webview origins
+  if (clean === 'tauri://localhost' || clean === 'https://tauri.localhost') return true;
   return false;
 };
 

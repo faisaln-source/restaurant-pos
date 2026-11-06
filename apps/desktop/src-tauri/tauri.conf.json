@@ -37,8 +37,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [],
-    "externalBin": [],
+    "resources": {
+      "api-bundle/app-config.json": "api-bundle/app-config.json",
+      "api-bundle/dist/.gitkeep": "api-bundle/dist/.gitkeep"
+    },
+    "externalBin": [
+      "binaries/api-server"
+    ],
     "copyright": "© 2026 Restaurant POS. All rights reserved.",
     "category": "Business",
     "shortDescription": "Modern Restaurant Point of Sale System",

@@ -1,0 +1,1 @@
+{"DATABASE_URL":"postgresql://postgres:password@localhost:5432/restaurant_pos","JWT_SECRET":"change-me","LICENSE_SECRET":"restaurant-pos-master-secret-2026","PORT":"4000","CORS_ORIGIN":"tauri://localhost","NODE_ENV":"production"}

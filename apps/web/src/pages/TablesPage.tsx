@@ -1592,11 +1592,11 @@ export default function TablesPage() {
       {/* Stats row with Card components */}
       <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-5">
         {[
-          { label: 'Total Tables', value: stats.total,     textColor: '#38bdf8', ringColor: 'rgba(14,165,233,0.15)', dotHex: '#38bdf8' },
-          { label: 'Available',    value: stats.available, textColor: '#34d399', ringColor: 'rgba(16,185,129,0.15)', dotHex: '#34d399' },
-          { label: 'Occupied',     value: stats.occupied,  textColor: '#fb923c', ringColor: 'rgba(249,115,22,0.15)',  dotHex: '#fb923c' },
-          { label: 'Reserved',     value: stats.reserved,  textColor: '#818cf8', ringColor: 'rgba(99,102,241,0.15)', dotHex: '#818cf8' },
-          { label: 'Cleaning',     value: stats.cleaning,  textColor: '#fbbf24', ringColor: 'rgba(245,158,11,0.15)', dotHex: '#fbbf24' },
+          { label: 'Total Tables', value: stats.total,     textColor: '#38bdf8', ringColor: 'rgba(14,165,233,0.15)', dotHex: '#38bdf8', Icon: LayoutGrid },
+          { label: 'Available',    value: stats.available, textColor: '#34d399', ringColor: 'rgba(16,185,129,0.15)', dotHex: '#34d399', Icon: CheckCircle },
+          { label: 'Occupied',     value: stats.occupied,  textColor: '#fb923c', ringColor: 'rgba(249,115,22,0.15)',  dotHex: '#fb923c', Icon: Users },
+          { label: 'Reserved',     value: stats.reserved,  textColor: '#818cf8', ringColor: 'rgba(99,102,241,0.15)', dotHex: '#818cf8', Icon: Clock },
+          { label: 'Cleaning',     value: stats.cleaning,  textColor: '#fbbf24', ringColor: 'rgba(245,158,11,0.15)', dotHex: '#fbbf24', Icon: Sparkles },
         ].map(s => (
           <Card key={s.label} className="border-border/80 bg-card/90 shadow-sm">
             <CardContent className="p-4 sm:p-5 flex items-center justify-between">
@@ -1605,7 +1605,7 @@ export default function TablesPage() {
                 <p className="text-2xl sm:text-3xl font-black tracking-tight mt-0.5" style={{ color: s.textColor }}>{s.value}</p>
               </div>
               <div className="h-11 w-11 rounded-xl flex items-center justify-center" style={{ backgroundColor: s.ringColor, boxShadow: `0 0 0 1px ${s.dotHex}40` }}>
-                <span className="h-3.5 w-3.5 rounded-full" style={{ backgroundColor: s.dotHex }} />
+                <s.Icon size={20} style={{ color: s.dotHex }} strokeWidth={2} />
               </div>
             </CardContent>
           </Card>
