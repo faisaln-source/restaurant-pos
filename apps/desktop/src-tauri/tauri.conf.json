@@ -39,6 +39,8 @@
     ],
     "resources": {
       "api-bundle/app-config.json": "api-bundle/app-config.json",
+      "api-bundle/package.json": "api-bundle/package.json",
+      "api-bundle/node.exe": "api-bundle/node.exe",
       "api-bundle/dist/.gitkeep": "api-bundle/dist/.gitkeep"
     },
     "externalBin": [

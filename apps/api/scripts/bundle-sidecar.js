@@ -80,6 +80,9 @@ for (const f of fs.readdirSync(BUNDLE_DIR)) {
   console.log(`   ${f.padEnd(30)} ${size}`);
 }
 
+// Restore .gitkeep in dist/ so cargo check always finds the resource file
+fs.writeFileSync(path.join(BUNDLE_DIR, 'dist', '.gitkeep'), '');
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function copyDir(src, dest) {
