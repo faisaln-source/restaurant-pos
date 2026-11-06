@@ -18,3 +18,12 @@ apps/desktop/src-tauri/gen/
 packages/license/dist/
 packages/license/node_modules/
 
+
+# API sidecar bundle (populated at build time by bundle-sidecar.js)
+apps/desktop/src-tauri/api-bundle/dist/
+apps/desktop/src-tauri/api-bundle/node_modules/
+apps/desktop/src-tauri/api-bundle/node.exe
+apps/desktop/src-tauri/api-bundle/package.json
+
+# API launcher Rust build artifacts
+apps/desktop/api-launcher/target/
