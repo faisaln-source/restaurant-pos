@@ -41,7 +41,15 @@
       "api-bundle/app-config.json": "api-bundle/app-config.json",
       "api-bundle/package.json": "api-bundle/package.json",
       "api-bundle/node.exe": "api-bundle/node.exe",
-      "api-bundle/dist/.gitkeep": "api-bundle/dist/.gitkeep"
+      "api-bundle/dist/.gitkeep": "api-bundle/dist/.gitkeep",
+      "pg-bundle/bin/initdb.exe": "pg-bundle/bin/initdb.exe",
+      "pg-bundle/bin/postgres.exe": "pg-bundle/bin/postgres.exe",
+      "pg-bundle/bin/pg_ctl.exe": "pg-bundle/bin/pg_ctl.exe",
+      "pg-bundle/bin/psql.exe": "pg-bundle/bin/psql.exe",
+      "pg-bundle/bin/pg_dump.exe": "pg-bundle/bin/pg_dump.exe",
+      "pg-bundle/bin/pg_resetwal.exe": "pg-bundle/bin/pg_resetwal.exe",
+      "pg-bundle/lib/**/*": "pg-bundle/lib",
+      "pg-bundle/share/**/*": "pg-bundle/share"
     },
     "externalBin": [
       "binaries/api-server"

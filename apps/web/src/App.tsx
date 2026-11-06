@@ -5,6 +5,7 @@ import { tryRestoreSession } from './services/auth.service';
 import { connectSocket, disconnectSocket } from './lib/socket';
 import { isTauri, getLicenseInfo, LicenseVerifyResult } from './lib/tauri';
 import { LicenseActivationScreen } from './components/LicenseActivationScreen';
+import StartupScreen from './components/StartupScreen';
 
 // Pages
 import LoginPage from './pages/LoginPage';
@@ -27,6 +28,11 @@ function App() {
   const { setProfile, setLoading, setAuthenticated, reset } = useAuthStore();
   const navigate = useNavigate();
 
+  // ── Startup gate (Tauri only) ───────────────────────────────────────────
+  // Shows the "Setting up database…" screen while postgres + API initialise.
+  // In browser/web mode this is skipped immediately.
+  const [setupReady, setSetupReady] = useState(!isTauri());
+
   // ── License gate (Tauri desktop only) ──────────────────────────────────
   // 'unknown' = still checking, 'valid' = licensed, 'invalid' = show activation
   const [licenseState, setLicenseState] = useState<'unknown' | 'valid' | 'invalid'>(
@@ -36,7 +42,8 @@ function App() {
   const [clockTampered, setClockTampered]        = useState(false);
 
   useEffect(() => {
-    if (!isTauri()) return; // web / mobile: no license gate
+    // Only run license check after setup (postgres + API) is ready
+    if (!isTauri() || !setupReady) return;
     getLicenseInfo().then(result => {
       if (result?.valid) {
         setLicenseState('valid');
@@ -49,7 +56,7 @@ function App() {
       setLicenseReason('Could not read license. Please re-activate.');
       setLicenseState('invalid');
     });
-  }, []);
+  }, [setupReady]);
 
   // Listen for session expiry events fired by the API client
   useEffect(() => {
@@ -96,7 +103,12 @@ function App() {
     };
   }, [setProfile, setLoading, setAuthenticated]);
 
-  // Show nothing while checking license (avoids flash)
+  // ── 1. Startup gate: show progress screen while postgres + API initialise ──
+  if (!setupReady) {
+    return <StartupScreen onReady={() => setSetupReady(true)} />;
+  }
+
+  // ── 2. Show spinner while checking license (avoids flash) ─────────────────
   if (licenseState === 'unknown') {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">

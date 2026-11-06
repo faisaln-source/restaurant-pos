@@ -27,3 +27,6 @@ apps/desktop/src-tauri/api-bundle/package.json
 
 # API launcher Rust build artifacts
 apps/desktop/api-launcher/target/
+
+# Portable PostgreSQL bundle (downloaded by apps/desktop/scripts/download-pg.js)
+apps/desktop/src-tauri/pg-bundle/

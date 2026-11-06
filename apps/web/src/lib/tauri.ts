@@ -1,5 +1,5 @@
 /**
- * Tauri bridge — type-safe wrappers around Tauri commands.
+ * Tauri bridge — type-safe wrappers around Tauri commands and events.
  * Gracefully returns null when running in a browser (non-Tauri) context.
  */
 
@@ -31,6 +31,13 @@ export interface LicenseVerifyResult {
   clockTampered: boolean;
 }
 
+export interface SetupProgress {
+  /** Short machine-readable phase name */
+  phase: string;
+  /** Human-readable message to display */
+  message: string;
+}
+
 // ─── Tauri invoke helper ─────────────────────────────────────────────────────
 
 type TauriInvoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -39,6 +46,57 @@ function getTauriInvoke(): TauriInvoke | null {
   if (!isTauri()) return null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (window as any).__TAURI_INTERNALS__?.invoke ?? null;
+}
+
+// ─── Event listener helper ───────────────────────────────────────────────────
+
+type UnlistenFn = () => void;
+
+/**
+ * Listen for Tauri events. Returns an unlisten function.
+ * No-op when not in Tauri.
+ */
+export async function listenTauri<T>(
+  event: string,
+  handler: (payload: T) => void,
+): Promise<UnlistenFn> {
+  if (!isTauri()) return () => {};
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { listen } = await import('@tauri-apps/api/event');
+  return listen<T>(event, (e) => handler(e.payload));
+}
+
+// ─── Setup events ────────────────────────────────────────────────────────────
+
+/**
+ * Subscribe to embedded-database startup progress events.
+ * Fires multiple times with phase/message until "setup:done" or "setup:error".
+ */
+export async function onSetupProgress(
+  onProgress: (p: SetupProgress) => void,
+  onDone: () => void,
+  onError: (msg: string) => void,
+): Promise<UnlistenFn> {
+  if (!isTauri()) {
+    // In browser dev mode, immediately call done
+    setTimeout(onDone, 100);
+    return () => {};
+  }
+
+  const { listen } = await import('@tauri-apps/api/event');
+  const unlisteners: UnlistenFn[] = [];
+
+  unlisteners.push(
+    await listen<SetupProgress>('setup:progress', (e) => onProgress(e.payload)),
+    await listen<void>('setup:done',    ()  => { onDone();         cleanup(); }),
+    await listen<string>('setup:error', (e) => { onError(e.payload); cleanup(); }),
+  );
+
+  function cleanup() {
+    unlisteners.forEach((u) => u());
+  }
+
+  return cleanup;
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
