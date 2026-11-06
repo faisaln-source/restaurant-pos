@@ -4,6 +4,7 @@
 //! Binaries live in `resources/pg-bundle/`.
 //! Data is stored in `AppData/Restaurant POS/pgdata/` (survives updates).
 
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -44,10 +45,26 @@ impl PostgresManager {
         self.data_dir.join("PG_VERSION").exists()
     }
 
+    /// Build a Command for a pg binary, with `bin_dir` prepended to PATH
+    /// so Windows can find icuuc67.dll and all other bundled DLLs.
+    fn pg_cmd(&self, exe: &str) -> Command {
+        let bin = self.bin_dir.join(exe);
+        let mut cmd = Command::new(&bin);
+        // Prepend our bin_dir to PATH so Windows DLL search finds all bundled DLLs
+        let bin_dir_str = self.bin_dir.to_string_lossy().to_string();
+        let current_path = env::var("PATH").unwrap_or_default();
+        let new_path = if current_path.is_empty() {
+            bin_dir_str
+        } else {
+            format!("{};{}", bin_dir_str, current_path)
+        };
+        cmd.env("PATH", new_path);
+        cmd
+    }
+
     /// True if the server process is currently running.
     pub fn is_running(&self) -> bool {
-        let pg_ctl = self.bin_dir.join("pg_ctl.exe");
-        Command::new(&pg_ctl)
+        self.pg_cmd("pg_ctl.exe")
             .args(["status", "-D", &self.data_dir.to_string_lossy()])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -73,8 +90,7 @@ impl PostgresManager {
         fs::write(&pw_file, PG_PASSWORD)
             .map_err(|e| format!("Cannot write temp password file: {e}"))?;
 
-        let initdb = self.bin_dir.join("initdb.exe");
-        let result = Command::new(&initdb)
+        let result = self.pg_cmd("initdb.exe")
             .args([
                 "-D",        &self.data_dir.to_string_lossy(),
                 "-U",        PG_USER,
@@ -134,12 +150,11 @@ impl PostgresManager {
             return Ok(());
         }
 
-        let pg_ctl  = self.bin_dir.join("pg_ctl.exe");
         let log     = self.data_dir.parent()
             .unwrap_or(&self.data_dir)
             .join("postgres.log");
 
-        let status = Command::new(&pg_ctl)
+        let status = self.pg_cmd("pg_ctl.exe")
             .args([
                 "start",
                 "-D",  &self.data_dir.to_string_lossy(),
@@ -164,8 +179,7 @@ impl PostgresManager {
     /// Gracefully stop the PostgreSQL server.
     pub fn stop(&self) {
         eprintln!("[pg] Stopping PostgreSQL");
-        let pg_ctl = self.bin_dir.join("pg_ctl.exe");
-        let _ = Command::new(&pg_ctl)
+        let _ = self.pg_cmd("pg_ctl.exe")
             .args([
                 "stop",
                 "-D", &self.data_dir.to_string_lossy(),
@@ -181,11 +195,10 @@ impl PostgresManager {
 
     /// Create the `restaurant_pos` database if it does not already exist.
     pub fn ensure_database(&self) -> Result<(), String> {
-        let psql = self.bin_dir.join("psql.exe");
         let port = PG_PORT.to_string();
 
         // Check whether the database exists
-        let out = Command::new(&psql)
+        let out = self.pg_cmd("psql.exe")
             .args(["-h", "127.0.0.1", "-p", &port,
                    "-U", PG_USER, "-d", "postgres",
                    "-tAc",
@@ -200,7 +213,7 @@ impl PostgresManager {
         }
 
         eprintln!("[pg] Creating database '{PG_DATABASE}'");
-        let status = Command::new(&psql)
+        let status = self.pg_cmd("psql.exe")
             .args(["-h", "127.0.0.1", "-p", &port,
                    "-U", PG_USER, "-d", "postgres",
                    "-c", &format!(
