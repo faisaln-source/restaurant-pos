@@ -1,4 +1,5 @@
 use tauri::AppHandle;
+use tauri::Manager;
 use std::path::PathBuf;
 use crate::license::{
     verify_license, daily_license_check, build_check_record,
