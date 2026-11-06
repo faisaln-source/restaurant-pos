@@ -42,14 +42,17 @@
       "api-bundle/package.json": "api-bundle/package.json",
       "api-bundle/node.exe": "api-bundle/node.exe",
       "api-bundle/dist/.gitkeep": "api-bundle/dist/.gitkeep",
-      "pg-bundle/bin/initdb.exe": "pg-bundle/bin/initdb.exe",
-      "pg-bundle/bin/postgres.exe": "pg-bundle/bin/postgres.exe",
-      "pg-bundle/bin/pg_ctl.exe": "pg-bundle/bin/pg_ctl.exe",
-      "pg-bundle/bin/psql.exe": "pg-bundle/bin/psql.exe",
-      "pg-bundle/bin/pg_dump.exe": "pg-bundle/bin/pg_dump.exe",
-      "pg-bundle/bin/pg_resetwal.exe": "pg-bundle/bin/pg_resetwal.exe",
+      "pg-bundle/bin/**/*": "pg-bundle/bin",
       "pg-bundle/lib/**/*": "pg-bundle/lib",
-      "pg-bundle/share/**/*": "pg-bundle/share"
+      "pg-bundle/share/extension/**/*": "pg-bundle/share/extension",
+      "pg-bundle/share/locale/**/*": "pg-bundle/share/locale",
+      "pg-bundle/share/timezone/**/*": "pg-bundle/share/timezone",
+      "pg-bundle/share/timezonesets/**/*": "pg-bundle/share/timezonesets",
+      "pg-bundle/share/tsearch_data/**/*": "pg-bundle/share/tsearch_data",
+      "pg-bundle/share/*.sql": "pg-bundle/share",
+      "pg-bundle/share/*.sample": "pg-bundle/share",
+      "pg-bundle/share/*.bki": "pg-bundle/share",
+      "pg-bundle/share/*.txt": "pg-bundle/share"
     },
     "externalBin": [
       "binaries/api-server"
