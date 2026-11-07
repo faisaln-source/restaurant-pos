@@ -731,12 +731,14 @@ function TableDialog({
   sections,
   allTables,
   onClose,
+  onSuccess,
 }: {
   open: boolean;
   table: Table | null;
   sections: string[];
   allTables: Table[];
   onClose: () => void;
+  onSuccess?: () => Promise<void> | void;
 }) {
   const [form, setForm] = useState({
     name: '',
@@ -763,15 +765,23 @@ function TableDialog({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.name.trim()) return;
+    if (!form.name.trim()) {
+      toast.error('Please enter a table name');
+      return;
+    }
+    const cap = parseInt(form.capacity);
+    if (isNaN(cap) || cap < 1) {
+      toast.error('Please enter a valid seat capacity');
+      return;
+    }
     setLoading(true);
     const section = addingSection && form.newSection.trim()
       ? form.newSection.trim() : form.floorSection;
     try {
       if (table) {
         await updateTable(table.id, {
-          name: form.name,
-          capacity: parseInt(form.capacity),
+          name: form.name.trim(),
+          capacity: cap,
           floorSection: section,
         } as Partial<Table>);
         toast.success('Table updated');
@@ -780,17 +790,21 @@ function TableDialog({
         const col = sectionTables.length % 4;
         const row = Math.floor(sectionTables.length / 4);
         await createTable({
-          name: form.name,
-          capacity: parseInt(form.capacity),
+          name: form.name.trim(),
+          capacity: cap,
           floorSection: section,
           posX: 40 + col * 184,
           posY: 40 + row * 132,
         });
         toast.success('Table created');
       }
+      await onSuccess?.();
       onClose();
-    } catch {
-      toast.error('Failed to save table');
+    } catch (err: unknown) {
+      const msg = (err as any)?.response?.data?.message
+        || (err as any)?.data?.message
+        || (err instanceof Error ? err.message : 'Failed to save table');
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -1691,6 +1705,7 @@ export default function TablesPage() {
         sections={sections}
         allTables={tables}
         onClose={() => { setDialogOpen(false); setSelectedTable(null); }}
+        onSuccess={reloadData}
       />
 
       {/* Cashier Payment Modal */}

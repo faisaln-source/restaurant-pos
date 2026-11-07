@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import QRCode from 'qrcode';
 import {
   Utensils, ShoppingBag, Plus, Minus, Search, Clock,
-  CheckCircle, ArrowRight, X, ChevronRight, Sparkles,
+  CheckCircle, ArrowRight, ArrowLeft, X, ChevronRight, Sparkles,
   QrCode, CreditCard, Banknote, RefreshCw, AlertCircle,
   Volume2, Flame, Award, Heart, ShieldCheck
 } from 'lucide-react';
@@ -29,6 +30,8 @@ interface CartItem {
 }
 
 export default function KioskPage() {
+  const navigate = useNavigate();
+
   // ── Data State ─────────────────────────────────────────────────────────────
   const [categories, setCategories] = useState<KioskCategory[]>([]);
   const [tables, setTables] = useState<KioskTable[]>([]);
@@ -261,31 +264,45 @@ export default function KioskPage() {
           </div>
         </div>
 
-        {/* Order Type Toggle (Dine In / Takeaway) */}
-        <div className="flex items-center gap-1.5 p-1 bg-white/[0.05] rounded-2xl border border-white/10">
+        {/* Top Right Actions: Order Type Toggle + Exit Kiosk */}
+        <div className="flex items-center gap-3">
+          {/* Order Type Toggle (Dine In / Takeaway) */}
+          <div className="flex items-center gap-1.5 p-1 bg-white/[0.05] rounded-2xl border border-white/10">
+            <button
+              type="button"
+              onClick={() => setOrderType('DINE_IN')}
+              className={`flex items-center gap-2 px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-xl text-xs sm:text-sm font-black transition-all cursor-pointer ${
+                orderType === 'DINE_IN'
+                  ? 'bg-amber-500 text-slate-950 shadow-md scale-105'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Utensils className="w-4 h-4" />
+              <span>Dine In</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setOrderType('TAKEAWAY')}
+              className={`flex items-center gap-2 px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-xl text-xs sm:text-sm font-black transition-all cursor-pointer ${
+                orderType === 'TAKEAWAY'
+                  ? 'bg-rose-600 text-white shadow-md scale-105'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <ShoppingBag className="w-4 h-4" />
+              <span>Takeaway</span>
+            </button>
+          </div>
+
+          {/* Exit Kiosk Button */}
           <button
             type="button"
-            onClick={() => setOrderType('DINE_IN')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-black transition-all cursor-pointer ${
-              orderType === 'DINE_IN'
-                ? 'bg-amber-500 text-slate-950 shadow-md scale-105'
-                : 'text-zinc-400 hover:text-white'
-            }`}
+            onClick={() => navigate('/dashboard')}
+            className="flex items-center gap-2 px-3.5 py-2 sm:px-4 sm:py-2.5 rounded-2xl bg-white/[0.06] hover:bg-rose-500/20 border border-white/10 hover:border-rose-500/40 text-zinc-300 hover:text-rose-400 font-black text-xs sm:text-sm transition-all cursor-pointer active:scale-95 shadow-md"
+            title="Exit Customer Kiosk and return to POS Dashboard"
           >
-            <Utensils className="w-4 h-4" />
-            <span>Dine In</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setOrderType('TAKEAWAY')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-black transition-all cursor-pointer ${
-              orderType === 'TAKEAWAY'
-                ? 'bg-rose-600 text-white shadow-md scale-105'
-                : 'text-zinc-400 hover:text-white'
-            }`}
-          >
-            <ShoppingBag className="w-4 h-4" />
-            <span>Takeaway</span>
+            <ArrowLeft className="w-4 h-4" />
+            <span>Exit Kiosk</span>
           </button>
         </div>
       </header>
@@ -831,13 +848,20 @@ export default function KioskPage() {
             )}
 
             {/* Footer Action */}
-            <div className="pt-2">
+            <div className="pt-2 flex flex-col gap-2">
               <Button
                 onClick={handleStartNewOrder}
                 className="w-full h-12 bg-white text-slate-950 hover:bg-zinc-200 font-black text-sm rounded-2xl shadow-lg cursor-pointer uppercase tracking-wider"
               >
                 <span>Done • Start New Order {countdown > 0 ? `(${countdown}s)` : ''}</span>
               </Button>
+              <button
+                type="button"
+                onClick={() => navigate('/dashboard')}
+                className="w-full py-2 text-center text-xs text-zinc-400 hover:text-white transition-colors cursor-pointer font-bold"
+              >
+                ← Return to Staff POS
+              </button>
             </div>
           </div>
         </div>

@@ -149,12 +149,24 @@ pub fn run() {
                     // ── 3. Start API sidecar with injected DB config ───────
                     emit("api", "Starting API server…");
                     start_api_sidecar(&handle, Some(db_url));
+                    eprintln!("[setup] Waiting for API server to report ready…");
+                    if wait_for_api(4000, 25) {
+                        eprintln!("[setup] API server is ready ✓");
+                    } else {
+                        eprintln!("[setup] WARNING: API health check timed out; proceeding anyway");
+                    }
 
                 } else {
                     // No bundled PostgreSQL — API connects to external PG via app-config.json
                     eprintln!("[setup] No pg-bundle found; using external database from app-config.json");
                     emit("api", "Starting API server…");
                     start_api_sidecar(&handle, None);
+                    eprintln!("[setup] Waiting for API server to report ready…");
+                    if wait_for_api(4000, 25) {
+                        eprintln!("[setup] API server is ready ✓");
+                    } else {
+                        eprintln!("[setup] WARNING: API health check timed out; proceeding anyway");
+                    }
                 }
 
                 // Signal React that setup is complete
@@ -221,4 +233,31 @@ fn start_api_sidecar(
             eprintln!("[tauri] WARNING: api-server sidecar not found: {e}");
         }
     }
+}
+
+fn wait_for_api(port: u16, max_seconds: u64) -> bool {
+    let addr_str = format!("127.0.0.1:{}", port);
+    let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() else {
+        return false;
+    };
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_millis(500);
+
+    while start.elapsed().as_secs() < max_seconds {
+        if let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, timeout) {
+            use std::io::{Read, Write};
+            let _ = stream.set_read_timeout(Some(timeout));
+            let req = format!("GET /health HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n", port);
+            if stream.write_all(req.as_bytes()).is_ok() {
+                let mut buf = [0u8; 256];
+                if let Ok(n) = stream.read(&mut buf) {
+                    if n > 0 && String::from_utf8_lossy(&buf[..n]).contains("200 OK") {
+                        return true;
+                    }
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    false
 }

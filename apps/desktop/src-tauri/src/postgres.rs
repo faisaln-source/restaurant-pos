@@ -203,6 +203,13 @@ impl PostgresManager {
             return Ok(());
         }
 
+        // Clean up stale postmaster.pid if postgres crashed or was forcefully closed previously
+        let pid_file = self.data_dir.join("postmaster.pid");
+        if pid_file.exists() && !self.is_running() {
+            eprintln!("[pg] Removing stale postmaster.pid from previous run");
+            let _ = fs::remove_file(&pid_file);
+        }
+
         let log     = self.data_dir.parent()
             .unwrap_or(&self.data_dir)
             .join("postgres.log");

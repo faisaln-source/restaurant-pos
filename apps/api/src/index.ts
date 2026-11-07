@@ -101,8 +101,13 @@ app.use('/uploads', express.static(uploadsDir));
 app.use(cookieParser());
 app.use(requestLogger);
 
+let isApiReady = false;
+
 // ── Health check ───────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => {
+  if (!isApiReady) {
+    return res.status(503).json({ status: 'initializing' });
+  }
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
@@ -201,6 +206,8 @@ if (process.env.NODE_ENV !== 'test') {
     console.log(`📡  Socket.IO ready`);
     console.log(`🌿  Environment: ${process.env.NODE_ENV}\n`);
     await ensureInitialData();
+    isApiReady = true;
+    console.log(`🚀  API ready for client requests\n`);
   });
 }
 
