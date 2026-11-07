@@ -147,6 +147,7 @@ function ItemDialog({
   activeCategoryId,
   kitchenStations,
   onClose,
+  onOpenCategoryDialog,
 }: {
   open: boolean;
   item: MenuItem | null;
@@ -154,6 +155,7 @@ function ItemDialog({
   activeCategoryId: string;
   kitchenStations: KitchenStation[];
   onClose: () => void;
+  onOpenCategoryDialog?: () => void;
 }) {
   const [form, setForm] = useState({
     name: '',
@@ -235,6 +237,10 @@ function ItemDialog({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!form.categoryId) {
+      toast.error('Please select or create a category first');
+      return;
+    }
     setLoading(true);
     setUploadProgress(null);
     try {
@@ -380,15 +386,38 @@ function ItemDialog({
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-foreground">Category *</label>
-              <select
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                value={form.categoryId}
-                onChange={e => set('categoryId', e.target.value)}
-                required
-              >
-                {categories.map(c => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
-              </select>
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-foreground">Category *</label>
+                {onOpenCategoryDialog && (
+                  <button
+                    type="button"
+                    onClick={onOpenCategoryDialog}
+                    className="text-xs text-primary hover:underline font-semibold"
+                  >
+                    + Add New Category
+                  </button>
+                )}
+              </div>
+              {categories.length === 0 ? (
+                <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-md text-xs text-amber-400 flex items-center justify-between">
+                  <span>No categories found yet. Please create a category first.</span>
+                  {onOpenCategoryDialog && (
+                    <Button type="button" size="sm" variant="outline" onClick={onOpenCategoryDialog} className="h-7 text-xs ml-2">
+                      + Add Category
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  value={form.categoryId}
+                  onChange={e => set('categoryId', e.target.value)}
+                  required
+                >
+                  <option value="" disabled>Select a category</option>
+                  {categories.map(c => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
+                </select>
+              )}
             </div>
 
             <div className="space-y-1.5">
@@ -975,6 +1004,7 @@ export default function MenuPage() {
           activeCategoryId={activeCatId}
           kitchenStations={kitchenStations}
           onClose={() => { setItemDialogOpen(false); setSelectedItem(null); }}
+          onOpenCategoryDialog={() => { setItemDialogOpen(false); setSelectedCat(null); setCatDialogOpen(true); }}
         />
 
         {/* Daily Price Board Modal */}

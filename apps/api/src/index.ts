@@ -123,7 +123,7 @@ app.use('/api/kitchen-stations', kitchenStationRoutes);
 app.use(notFound);
 app.use(errorHandler);
 
-async function ensureInitialUsers() {
+async function ensureInitialData() {
   try {
     const defaultUsers = [
       { email: 'admin@restaurant.com', name: 'Admin User', role: 'ADMIN', pass: 'admin123', pin: '0000' },
@@ -150,8 +150,44 @@ async function ensureInitialUsers() {
       }
     }
     console.log('✅ Default staff accounts verified');
+
+    // Default categories if empty
+    const categoryCount = await prisma.category.count();
+    if (categoryCount === 0) {
+      console.log('🌱 Seeding initial restaurant categories...');
+      const initialCategories = [
+        { name: 'Appetizers & Starters', icon: '🥗', displayOrder: 1 },
+        { name: 'Main Course', icon: '🍛', displayOrder: 2 },
+        { name: 'Rice & Breads', icon: '🍚', displayOrder: 3 },
+        { name: 'Beverages', icon: '🍹', displayOrder: 4 },
+        { name: 'Desserts', icon: '🍨', displayOrder: 5 },
+      ];
+      for (const cat of initialCategories) {
+        await prisma.category.create({ data: cat });
+      }
+      console.log('✅ Initial categories created');
+    }
+
+    // Default kitchen stations if empty
+    try {
+      const stationCount = await prisma.kitchenStation.count();
+      if (stationCount === 0) {
+        console.log('🌱 Seeding initial kitchen stations...');
+        const initialStations = [
+          { name: 'Main Kitchen', description: 'Hot meals & main courses', color: '#f97316', displayOrder: 0 },
+          { name: 'Drinks & Bar', description: 'Beverages and juices', color: '#06b6d4', displayOrder: 1 },
+          { name: 'Dessert Station', description: 'Desserts and sweets', color: '#ec4899', displayOrder: 2 },
+        ];
+        for (const st of initialStations) {
+          await prisma.kitchenStation.create({ data: st });
+        }
+        console.log('✅ Initial kitchen stations created');
+      }
+    } catch (stErr) {
+      console.warn('⚠️ Could not verify initial kitchen stations:', stErr);
+    }
   } catch (err) {
-    console.warn('⚠️ Could not verify initial users:', err);
+    console.warn('⚠️ Could not verify initial data:', err);
   }
 }
 
@@ -164,7 +200,7 @@ if (process.env.NODE_ENV !== 'test') {
     console.log(`✅  Server running on http://localhost:${PORT}`);
     console.log(`📡  Socket.IO ready`);
     console.log(`🌿  Environment: ${process.env.NODE_ENV}\n`);
-    await ensureInitialUsers();
+    await ensureInitialData();
   });
 }
 

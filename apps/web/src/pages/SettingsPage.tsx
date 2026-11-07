@@ -260,7 +260,11 @@ export default function SettingsPage() {
       setKitchenStations(prev => [...prev, created]);
       setNewStation({ name: '', description: '', color: '#6366f1' });
       toast.success('Kitchen station added');
-    } catch { toast.error('Failed to add station'); }
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+        || (err instanceof Error ? err.message : 'Failed to add station');
+      toast.error(msg);
+    }
     finally { setSavingStation(false); }
   };
 
