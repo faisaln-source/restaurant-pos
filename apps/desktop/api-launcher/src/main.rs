@@ -115,9 +115,17 @@ fn main() {
         .stderr(Stdio::inherit())
         .env("NODE_PATH", nm.to_string_lossy().as_ref());
 
-    // Inject config env vars (override any inherited values)
+    // Inject config env vars — do not overwrite values already injected by Tauri (e.g. DATABASE_URL)
     for (k, v) in &config_env {
+        if env::var(k).is_ok() {
+            continue;
+        }
         cmd.env(k, v);
+    }
+
+    // Explicitly forward DATABASE_URL if injected by Tauri
+    if let Ok(db) = env::var("DATABASE_URL") {
+        cmd.env("DATABASE_URL", db);
     }
 
     let mut child = cmd.spawn().unwrap_or_else(|e| {

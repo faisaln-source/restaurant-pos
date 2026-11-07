@@ -1,8 +1,8 @@
 {
-  "DATABASE_URL": "postgresql://postgres:password@localhost:5432/restaurant_pos",
+  "DATABASE_URL": "postgresql://pos_admin:POS_internal_db_2026!@127.0.0.1:5433/restaurant_pos",
   "JWT_SECRET": "change-me-on-first-run",
   "LICENSE_SECRET": "restaurant-pos-master-secret-2026",
   "PORT": "4000",
-  "CORS_ORIGIN": "tauri://localhost",
+  "CORS_ORIGIN": "tauri://localhost,http://tauri.localhost,https://tauri.localhost",
   "NODE_ENV": "production"
 }

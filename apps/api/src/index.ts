@@ -30,6 +30,8 @@ import kitchenStationRoutes from './routes/kitchen-station.routes';
 
 
 import { registerSocketHandlers } from './sockets';
+import bcrypt from 'bcryptjs';
+import prisma from './lib/prisma';
 
 const app = express();
 const httpServer = createServer(app);
@@ -50,8 +52,9 @@ const isOriginAllowed = (origin?: string): boolean => {
   if (/^https:\/\/.*\.trycloudflare\.com$/.test(clean)) return true;
   if (/^https:\/\/.*\.loca\.lt$/.test(clean)) return true;
   if (/^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/.test(clean)) return true;
-  // Allow Tauri desktop webview origins
-  if (clean === 'tauri://localhost' || clean === 'https://tauri.localhost') return true;
+  // Allow Tauri desktop webview origins (Windows uses http://tauri.localhost, macOS/Linux use tauri://localhost)
+  if (clean === 'tauri://localhost' || clean === 'https://tauri.localhost' || clean === 'http://tauri.localhost') return true;
+  if (clean.includes('tauri.localhost') || clean.startsWith('tauri://')) return true;
   return false;
 };
 
@@ -120,15 +123,48 @@ app.use('/api/kitchen-stations', kitchenStationRoutes);
 app.use(notFound);
 app.use(errorHandler);
 
+async function ensureInitialUsers() {
+  try {
+    const defaultUsers = [
+      { email: 'admin@restaurant.com', name: 'Admin User', role: 'ADMIN', pass: 'admin123', pin: '0000' },
+      { email: 'cashier@restaurant.com', name: 'Cashier User', role: 'CASHIER', pass: 'cashier123', pin: '1234' },
+      { email: 'waiter@restaurant.com', name: 'Waiter User', role: 'WAITER', pass: 'waiter123', pin: '9999' },
+      { email: 'kitchen@restaurant.com', name: 'Kitchen Staff', role: 'KITCHEN', pass: 'kitchen123', pin: '5678' },
+    ];
+
+    for (const u of defaultUsers) {
+      const exists = await prisma.user.findUnique({ where: { email: u.email } });
+      if (!exists) {
+        console.log(`🌱 Creating default user ${u.name} (${u.role})...`);
+        const passwordHash = await bcrypt.hash(u.pass, 12);
+        const pinHash = await bcrypt.hash(u.pin, 12);
+        await prisma.user.create({
+          data: {
+            name: u.name,
+            email: u.email,
+            passwordHash,
+            pin: pinHash,
+            role: u.role as any,
+          },
+        });
+      }
+    }
+    console.log('✅ Default staff accounts verified');
+  } catch (err) {
+    console.warn('⚠️ Could not verify initial users:', err);
+  }
+}
+
 // ── Start server ───────────────────────────────────────────────────────────
 const PORT = Number(process.env.PORT) || 4000;
 
 if (process.env.NODE_ENV !== 'test') {
-  httpServer.listen(PORT, () => {
+  httpServer.listen(PORT, async () => {
     console.log(`\n🍽️  Restaurant POS API`);
     console.log(`✅  Server running on http://localhost:${PORT}`);
     console.log(`📡  Socket.IO ready`);
     console.log(`🌿  Environment: ${process.env.NODE_ENV}\n`);
+    await ensureInitialUsers();
   });
 }
 

@@ -113,8 +113,14 @@ pub fn run() {
                     emit("migrate", "Applying database migrations…");
                     let api_bundle = resource_dir.join("api-bundle");
                     let node_exe   = api_bundle.join("node.exe");
-                    let prisma_bin = api_bundle.join("node_modules")
-                        .join("prisma").join("bin.js");
+                    let prisma_bin = {
+                        let p1 = api_bundle.join("node_modules").join("prisma").join("build").join("index.js");
+                        if p1.exists() {
+                            p1
+                        } else {
+                            api_bundle.join("node_modules").join("prisma").join("bin.js")
+                        }
+                    };
 
                     if node_exe.exists() && prisma_bin.exists() {
                         let status = std::process::Command::new(&node_exe)
