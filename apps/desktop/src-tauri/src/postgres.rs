@@ -46,19 +46,36 @@ impl PostgresManager {
     }
 
     /// Build a Command for a pg binary, with `bin_dir` prepended to PATH
-    /// so Windows can find icuuc67.dll and all other bundled DLLs.
+    /// so Windows can find icuuc67.dll and all other bundled DLLs,
+    /// and with PGSHAREDIR / PGDATA env vars pointing to our bundled share/.
     fn pg_cmd(&self, exe: &str) -> Command {
         let bin = self.bin_dir.join(exe);
         let mut cmd = Command::new(&bin);
+
         // Prepend our bin_dir to PATH so Windows DLL search finds all bundled DLLs
         let bin_dir_str = self.bin_dir.to_string_lossy().to_string();
         let current_path = env::var("PATH").unwrap_or_default();
         let new_path = if current_path.is_empty() {
-            bin_dir_str
+            bin_dir_str.clone()
         } else {
             format!("{};{}", bin_dir_str, current_path)
         };
         cmd.env("PATH", new_path);
+
+        // Tell PostgreSQL binaries where our bundled share/ directory is.
+        // Without this, initdb/postgres look for share/ relative to a compiled-in
+        // prefix that doesn't exist in a portable install.
+        let share_dir = self.bin_dir.parent()
+            .unwrap_or(&self.bin_dir)
+            .join("share");
+        cmd.env("PGSHAREDIR", share_dir.to_string_lossy().as_ref());
+
+        // Also set PGLIB so postgres can find lib/ (timezone data etc.)
+        let lib_dir = self.bin_dir.parent()
+            .unwrap_or(&self.bin_dir)
+            .join("lib");
+        cmd.env("PGLIB", lib_dir.to_string_lossy().as_ref());
+
         cmd
     }
 
@@ -96,10 +113,9 @@ impl PostgresManager {
                 .map_err(|e| format!("Cannot create app-data parent dir: {e}"))?;
         }
 
-        // initdb reads the initial superuser password from a file
-        let pw_file = self.data_dir.parent()
-            .unwrap_or(&self.data_dir)
-            .join("pg_init_pw.tmp");
+        // initdb reads the initial superuser password from a temp file.
+        // Use %TEMP% (always writable) instead of pgdata parent.
+        let pw_file = std::env::temp_dir().join("pos_pg_init_pw.tmp");
         fs::write(&pw_file, PG_PASSWORD)
             .map_err(|e| format!("Cannot write temp password file: {e}"))?;
 
@@ -112,6 +128,7 @@ impl PostgresManager {
                 "-E",        "UTF8",
                 "--locale",  "C",
                 "--lc-messages", "C",
+                "--no-sync",   // skip fsync — dramatically faster on Windows
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
