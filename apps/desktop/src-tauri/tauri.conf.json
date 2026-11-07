@@ -38,10 +38,7 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "api-bundle/app-config.json": "api-bundle/app-config.json",
-      "api-bundle/package.json": "api-bundle/package.json",
-      "api-bundle/node.exe": "api-bundle/node.exe",
-      "api-bundle/dist/.gitkeep": "api-bundle/dist/.gitkeep",
+      "api-bundle": "api-bundle",
       "pg-bundle/bin/**/*": "pg-bundle/bin",
       "pg-bundle/lib/**/*": "pg-bundle/lib",
       "pg-bundle/share/extension/**/*": "pg-bundle/share/extension",

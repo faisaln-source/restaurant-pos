@@ -19,6 +19,19 @@ pub const PG_DATABASE: &str = "restaurant_pos";
 /// Change this string to rotate credentials in future builds.
 const PG_PASSWORD: &str = "POS_internal_db_2026!";
 
+/// Strips Windows verbatim prefix (`\\?\` or `\\?\UNC\`) so C runtimes
+/// (like PostgreSQL and its sub-processes) don't choke when converting `\` to `/`.
+pub fn sanitize_path(path: PathBuf) -> PathBuf {
+    let s = path.to_string_lossy().to_string();
+    if let Some(stripped) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{}", stripped))
+    } else if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        path
+    }
+}
+
 pub struct PostgresManager {
     pub bin_dir:  PathBuf,  // <resources>/pg-bundle/bin/
     pub data_dir: PathBuf,  // <AppData>/Restaurant POS/pgdata/
@@ -26,9 +39,11 @@ pub struct PostgresManager {
 
 impl PostgresManager {
     pub fn new(resource_dir: &Path, app_data_dir: &Path) -> Self {
+        let clean_res = sanitize_path(resource_dir.to_path_buf());
+        let clean_data = sanitize_path(app_data_dir.to_path_buf());
         Self {
-            bin_dir:  resource_dir.join("pg-bundle").join("bin"),
-            data_dir: app_data_dir.join("pgdata"),
+            bin_dir:  clean_res.join("pg-bundle").join("bin"),
+            data_dir: clean_data.join("pgdata"),
         }
     }
 
@@ -51,6 +66,9 @@ impl PostgresManager {
     fn pg_cmd(&self, exe: &str) -> Command {
         let bin = self.bin_dir.join(exe);
         let mut cmd = Command::new(&bin);
+
+        // Crucial: set working directory to bin_dir so Windows finds DLLs in current dir
+        cmd.current_dir(&self.bin_dir);
 
         // Prepend our bin_dir to PATH so Windows DLL search finds all bundled DLLs
         let bin_dir_str = self.bin_dir.to_string_lossy().to_string();

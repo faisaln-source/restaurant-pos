@@ -43,25 +43,31 @@ pub fn run() {
             let handle = app.handle().clone();
 
             // ── Acquire resource + app-data paths ─────────────────────────
-            let resource_dir = app.path().resource_dir()
+            let raw_resource_dir = app.path().resource_dir()
                 .unwrap_or_else(|_| std::env::current_exe()
                     .unwrap()
                     .parent()
                     .unwrap()
                     .to_path_buf());
 
-            let app_data_dir = app.path().app_data_dir()
+            let raw_app_data_dir = app.path().app_data_dir()
                 .unwrap_or_else(|_| {
                     let home = std::env::var("APPDATA")
                         .unwrap_or_else(|_| ".".to_string());
                     std::path::PathBuf::from(home).join("Restaurant POS")
                 });
 
+            let resource_dir = postgres::sanitize_path(raw_resource_dir);
+            let app_data_dir = postgres::sanitize_path(raw_app_data_dir);
+
             eprintln!("[tauri] resource_dir : {}", resource_dir.display());
             eprintln!("[tauri] app_data_dir : {}", app_data_dir.display());
 
             // ── Background thread: start postgres then API ─────────────────
             std::thread::spawn(move || {
+                // Give the webview a brief moment (1000ms) to mount and attach event listeners
+                std::thread::sleep(std::time::Duration::from_millis(1000));
+
                 let emit = |phase: &'static str, msg: &str| {
                     let _ = handle.emit("setup:progress", SetupProgress {
                         phase,

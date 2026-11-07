@@ -63,18 +63,11 @@ async function main() {
   fs.mkdirSync(path.join(OUT_DIR, 'lib'),   { recursive: true });
   fs.mkdirSync(path.join(OUT_DIR, 'share'), { recursive: true });
 
-  console.log('\n📋 Copying binaries...');
-  for (const bin of REQUIRED_BINS) {
-    const src = path.join(pgSrc, 'bin', bin);
-    if (!fs.existsSync(src)) {
-      console.warn(`  ⚠️  ${bin} not found — skipping`);
-      continue;
-    }
-    fs.copyFileSync(src, path.join(OUT_DIR, 'bin', bin));
-    console.log(`  ✓ bin/${bin}`);
-  }
+  // Copy ALL files from bin/ — exes AND the DLLs they depend on (icuuc67.dll etc.)
+  console.log('\n📋 Copying bin/ (exes + DLLs)...');
+  copyDir(path.join(pgSrc, 'bin'), path.join(OUT_DIR, 'bin'));
 
-  console.log('\n📋 Copying lib/ (DLLs)...');
+  console.log('📋 Copying lib/ (extension libs)...');
   copyDir(path.join(pgSrc, 'lib'), path.join(OUT_DIR, 'lib'));
 
   console.log('📋 Copying share/ (locale/encoding data)...');

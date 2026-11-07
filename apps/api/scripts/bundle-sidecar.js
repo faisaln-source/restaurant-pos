@@ -43,6 +43,11 @@ copyDir(distDir, path.join(BUNDLE_DIR, 'dist'));
 // 3. Copy production node_modules/
 console.log('  Copying node_modules/ (this may take a while)...');
 copyDir(path.join(API_DIR, 'node_modules'), path.join(BUNDLE_DIR, 'node_modules'));
+// Remove .bin symlinks to avoid Windows packaging error (os error 5 Access is denied)
+const binDir = path.join(BUNDLE_DIR, 'node_modules', '.bin');
+if (fs.existsSync(binDir)) {
+  fs.rmSync(binDir, { recursive: true, force: true });
+}
 
 // 4. Copy prisma schema + migrations (Prisma reads these at runtime)
 console.log('  Copying prisma/...');
