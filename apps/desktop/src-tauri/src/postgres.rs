@@ -80,8 +80,21 @@ impl PostgresManager {
     pub fn init_cluster(&self) -> Result<(), String> {
         eprintln!("[pg] Initialising cluster at {}", self.data_dir.display());
 
-        fs::create_dir_all(&self.data_dir)
-            .map_err(|e| format!("Cannot create pgdata dir: {e}"))?;
+        // If a previous failed init left an empty/corrupt pgdata dir, remove it.
+        // initdb cannot chmod a pre-existing directory on Windows → "Permission denied".
+        if self.data_dir.exists() && !self.data_dir.join("PG_VERSION").exists() {
+            eprintln!("[pg] Removing incomplete pgdata dir for fresh init");
+            fs::remove_dir_all(&self.data_dir)
+                .map_err(|e| format!("Cannot remove stale pgdata dir: {e}"))?;
+        }
+
+        // Let initdb create the directory itself (it sets correct permissions).
+
+        // Ensure the parent dir exists so we can write the temp password file
+        if let Some(parent) = self.data_dir.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Cannot create app-data parent dir: {e}"))?;
+        }
 
         // initdb reads the initial superuser password from a file
         let pw_file = self.data_dir.parent()
@@ -100,16 +113,21 @@ impl PostgresManager {
                 "--locale",  "C",
                 "--lc-messages", "C",
             ])
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .status()
+            .output()
             .map_err(|e| format!("Failed to run initdb: {e}"));
 
         let _ = fs::remove_file(&pw_file); // always clean up
 
-        let status = result?;
-        if !status.success() {
-            return Err(format!("initdb exited with code {:?}", status.code()));
+        let output = result?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(format!(
+                "initdb failed (code {:?}):\nSTDERR: {}\nSTDOUT: {}",
+                output.status.code(), stderr, stdout
+            ));
         }
 
         // Patch postgresql.conf with our custom settings
