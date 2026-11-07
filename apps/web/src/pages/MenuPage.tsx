@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Plus, Pencil, Trash2, Search, Upload, ToggleLeft, ToggleRight,
   Database, Clock, MoreVertical,
@@ -47,10 +47,12 @@ function CategoryDialog({
   open,
   category,
   onClose,
+  onSuccess,
 }: {
   open: boolean;
   category: MenuCategory | null;
   onClose: () => void;
+  onSuccess?: () => Promise<void> | void;
 }) {
   const [name, setName] = useState('');
   const [icon, setIcon] = useState('🍽️');
@@ -65,7 +67,10 @@ function CategoryDialog({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
+    if (!name.trim()) {
+      toast.error('Please enter a category name');
+      return;
+    }
     setLoading(true);
     try {
       if (category) {
@@ -75,9 +80,13 @@ function CategoryDialog({
         await createCategory({ name: name.trim(), icon, displayOrder: 99 });
         toast.success('Category created');
       }
+      await onSuccess?.();
       onClose();
-    } catch {
-      toast.error('Failed to save category');
+    } catch (err: unknown) {
+      const msg = (err as any)?.response?.data?.message
+        || (err as any)?.data?.message
+        || (err instanceof Error ? err.message : 'Failed to save category');
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -148,6 +157,7 @@ function ItemDialog({
   kitchenStations,
   onClose,
   onOpenCategoryDialog,
+  onSuccess,
 }: {
   open: boolean;
   item: MenuItem | null;
@@ -156,6 +166,7 @@ function ItemDialog({
   kitchenStations: KitchenStation[];
   onClose: () => void;
   onOpenCategoryDialog?: () => void;
+  onSuccess?: () => Promise<void> | void;
 }) {
   const [form, setForm] = useState({
     name: '',
@@ -237,10 +248,20 @@ function ItemDialog({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!form.name.trim()) {
+      toast.error('Please enter a dish name');
+      return;
+    }
     if (!form.categoryId) {
       toast.error('Please select or create a category first');
       return;
     }
+    const numPrice = parseFloat(form.price);
+    if (isNaN(numPrice) || numPrice <= 0) {
+      toast.error('Please enter a valid price greater than 0');
+      return;
+    }
+
     setLoading(true);
     setUploadProgress(null);
     try {
@@ -269,7 +290,7 @@ function ItemDialog({
       const data = {
         name: form.name.trim(),
         description: form.description.trim(),
-        price: parseFloat(form.price),
+        price: numPrice,
         isVariablePrice,
         dailyPrice: isVariablePrice && dailyPrice ? parseFloat(dailyPrice) : null,
         dayPrices: isVariablePrice ? parsedDayPrices : null,
@@ -290,9 +311,14 @@ function ItemDialog({
         await createMenuItem({ ...data, imageUrl });
         toast.success('Dish created');
       }
+      await onSuccess?.();
       onClose();
-    } catch {
-      toast.error('Failed to save item');
+    } catch (err: unknown) {
+      console.error('Failed to save item:', err);
+      const msg = (err as any)?.response?.data?.message
+        || (err as any)?.data?.message
+        || (err instanceof Error ? err.message : 'Failed to save item');
+      toast.error(msg);
     } finally {
       setLoading(false);
       setUploadProgress(null);
@@ -605,18 +631,27 @@ export default function MenuPage() {
 
   const variableItemsCount = items.filter(i => i.isVariablePrice).length;
 
-  useEffect(() => {
-    const unsub1 = subscribeToCategories((cats) => {
+  const refreshData = useCallback(async () => {
+    try {
+      const [cats, its, stns] = await Promise.all([
+        fetchCategories(),
+        fetchMenuItems(),
+        fetchKitchenStations().catch(() => []),
+      ]);
       setCategories(cats);
-    });
-    const unsub2 = subscribeToMenuItems(setItems);
-    fetchKitchenStations().then(setKitchenStations).catch(() => {});
-    return () => { unsub1(); unsub2(); };
+      setItems(its);
+      if (stns) setKitchenStations(stns);
+    } catch (e) {
+      console.error('Failed to load menu data:', e);
+    }
   }, []);
 
+  useEffect(() => {
+    refreshData();
+  }, [refreshData]);
+
   useSocketEvent('menu:updated', () => {
-    fetchCategories().then(setCategories).catch(console.error);
-    fetchMenuItems().then(setItems).catch(console.error);
+    refreshData();
   });
 
   const handleSeed = async () => {
@@ -624,6 +659,7 @@ export default function MenuPage() {
     try {
       await seedMenu();
       toast.success('Sample menu loaded!');
+      await refreshData();
     } catch {
       toast.error('Seed failed');
     } finally {
@@ -642,8 +678,10 @@ export default function MenuPage() {
       await deleteCategory(cat.id);
       toast.success('Category deleted');
       if (activeCatId === cat.id) setActiveCatId('all');
-    } catch {
-      toast.error('Failed to delete');
+      await refreshData();
+    } catch (err: unknown) {
+      const msg = (err as any)?.response?.data?.message || (err instanceof Error ? err.message : 'Failed to delete');
+      toast.error(msg);
     }
   };
 
@@ -652,8 +690,10 @@ export default function MenuPage() {
     try {
       await deleteMenuItem(item.id);
       toast.success('Item deleted');
-    } catch {
-      toast.error('Failed to delete');
+      await refreshData();
+    } catch (err: unknown) {
+      const msg = (err as any)?.response?.data?.message || (err instanceof Error ? err.message : 'Failed to delete');
+      toast.error(msg);
     }
   };
 
@@ -661,8 +701,10 @@ export default function MenuPage() {
     try {
       await toggleItemAvailability(item.id, !item.isAvailable);
       toast.success(item.isAvailable ? 'Marked unavailable' : 'Marked available');
-    } catch {
-      toast.error('Failed to update');
+      await refreshData();
+    } catch (err: unknown) {
+      const msg = (err as any)?.response?.data?.message || (err instanceof Error ? err.message : 'Failed to update');
+      toast.error(msg);
     }
   };
 
@@ -994,6 +1036,7 @@ export default function MenuPage() {
           open={catDialogOpen}
           category={selectedCat}
           onClose={() => { setCatDialogOpen(false); setSelectedCat(null); }}
+          onSuccess={refreshData}
         />
 
         {/* Item Dialog */}
@@ -1005,6 +1048,7 @@ export default function MenuPage() {
           kitchenStations={kitchenStations}
           onClose={() => { setItemDialogOpen(false); setSelectedItem(null); }}
           onOpenCategoryDialog={() => { setItemDialogOpen(false); setSelectedCat(null); setCatDialogOpen(true); }}
+          onSuccess={refreshData}
         />
 
         {/* Daily Price Board Modal */}

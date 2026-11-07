@@ -145,6 +145,15 @@ export async function uploadMenuImage(
   itemId: string,
   onProgress?: (percent: number) => void
 ): Promise<string> {
+  // In desktop / Tauri or offline environments, bypass Firebase and upload directly to local API
+  const isDesktopOrOffline = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || !window.navigator.onLine);
+  if (isDesktopOrOffline) {
+    if (onProgress) onProgress(30);
+    const backendUrl = await uploadToBackend(file);
+    if (onProgress) onProgress(100);
+    return backendUrl;
+  }
+
   let uploadTask: ReturnType<typeof uploadBytesResumable> | null = null;
 
   try {
