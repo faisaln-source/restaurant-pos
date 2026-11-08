@@ -139,3 +139,43 @@ export async function getAppDataDir(): Promise<string | null> {
   if (!invoke) return null;
   return invoke('get_app_data_dir') as Promise<string>;
 }
+
+/**
+ * Open an external URL in the default browser or OS handler (e.g. WhatsApp, web links).
+ * In desktop Tauri, calls the native Rust `open_external_url` command with shell fallback.
+ * In a web browser, uses window.open.
+ */
+export async function openExternalUrl(url: string): Promise<void> {
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    try {
+      await invoke('open_external_url', { url });
+      return;
+    } catch (err) {
+      console.warn('Tauri open_external_url failed, falling back to window.open:', err);
+    }
+  }
+
+  const win = window.open(url, '_blank', 'noopener,noreferrer');
+  if (!win) {
+    window.location.href = url;
+  }
+}
+
+/**
+ * Cleanly exit the desktop application or close the browser window.
+ */
+export async function exitApp(): Promise<void> {
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    try {
+      await invoke('exit_app');
+      return;
+    } catch (err) {
+      console.warn('Tauri exit_app failed:', err);
+    }
+  }
+
+  // Web browser fallback
+  window.close();
+}

@@ -3,7 +3,8 @@
  * Generates an 80mm-style kitchen docket and opens the system print dialog.
  * Content is rendered at the correct width so it aligns on any printer.
  */
-import type { Order } from './types';
+import type { Order, Payment } from './types';
+import { openExternalUrl } from './tauri';
 
 export interface PrintKitchenTicketOptions {
   restaurantName?: string;
@@ -318,63 +319,193 @@ ${tableName ? `<div class="meta">Table: <strong>${esc(tableName)}</strong></div>
 
 // ── WhatsApp share ────────────────────────────────────────────────────────────
 /**
- * Build a nicely formatted WhatsApp bill message and open the wa.me chat.
- * @param phone  Customer phone — digits only, with or without country code.
- *               If no country code, 91 (India) is prepended.
+ * Build a beautifully formatted WhatsApp bill message matching the receipt and open wa.me chat.
+ * @param order   Order to share
+ * @param phone   Customer phone — digits only, with or without country code.
+ * @param restName Optional custom restaurant name
+ * @param payment Optional payment details (method, status, tip, change)
  */
-export function shareOrderOnWhatsApp(order: Order, phone: string, restName?: string): void {
+export async function shareOrderOnWhatsApp(
+  order: Order,
+  phone: string,
+  restName?: string,
+  payment?: Partial<Payment> | null,
+): Promise<void> {
   // Normalise phone number
-  let num = phone.replace(/\D/g, '');
-  if (num.length === 10) num = '91' + num;          // add India code
-  if (!num.startsWith('+')) num = '+' + num;
+  let num = (phone || '').replace(/\D/g, '');
+  if (num.length === 10) num = '91' + num;          // default India country code for 10 digits
+  if (num.startsWith('+')) num = num.slice(1);
 
-  const restaurant = restName ?? (() => {
-    try {
-      const s = localStorage.getItem('pos_settings');
-      return s ? (JSON.parse(s) as any).restaurantName ?? 'Restaurant' : 'Restaurant';
-    } catch { return 'Restaurant'; }
-  })();
+  // Settings lookup
+  let savedSettings: any = {};
+  try {
+    const s = localStorage.getItem('pos_settings');
+    if (s) savedSettings = JSON.parse(s);
+  } catch { /* use defaults */ }
 
-  const currency = (() => {
-    try {
-      const s = localStorage.getItem('pos_settings');
-      return s ? (JSON.parse(s) as any).currency ?? '₹' : '₹';
-    } catch { return '₹'; }
-  })();
+  const restaurant = (restName || savedSettings.restaurantName || 'RestoPOS').trim();
+  const currency = savedSettings.currency || '₹';
+  const address = (savedSettings.address || 'Restaurant & Bar').trim();
+  const phoneContact = savedSettings.phone ? savedSettings.phone.trim() : '';
 
-  const fmt = (n: number) => `${currency}${n.toFixed(2)}`;
-  const date = order.createdAt
-    ? new Date(order.createdAt).toLocaleString('en-IN', {
-        day: '2-digit', month: 'short', year: 'numeric',
-        hour: '2-digit', minute: '2-digit', hour12: true,
-      })
-    : new Date().toLocaleString('en-IN');
+  const fmt = (n: number | string | undefined | null) => {
+    const numVal = Number(n);
+    return `${currency}${(!isNaN(numVal) ? numVal : 0).toFixed(2)}`;
+  };
 
-  const active = order.items.filter(i => i.status !== 'CANCELLED');
-  const itemLines = active.map(i => `  • ${i.quantity}× ${i.menuItemName}${i.note ? ` _(${i.note})_` : ''}`).join('\n');
+  const rawDate = order.createdAt ? new Date(order.createdAt) : new Date();
+  const dateStr = !isNaN(rawDate.getTime())
+    ? rawDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    : new Date().toLocaleDateString('en-IN');
+  const timeStr = !isNaN(rawDate.getTime())
+    ? rawDate.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
+    : '';
 
-  const typeLabel2 = ({ DINE_IN: 'Dine In', TAKEAWAY: 'Takeaway', DELIVERY: 'Delivery' }[order.type] ?? order.type);
+  const typeMap: Record<string, string> = {
+    DINE_IN: 'Dine In',
+    TAKEAWAY: 'Takeaway',
+    DELIVERY: 'Delivery',
+    BAR: 'Counter / Bar',
+  };
+  const typeLabelStr = typeMap[order.type] || (order.type ? order.type.replace('_', ' ') : 'Dine In');
+  const tableName = order.tableName || (order as any).table?.name || null;
+  const serverName = order.userName || (order as any).user?.name || null;
+  const customerName = order.customerName?.trim() || null;
 
-  const lines: string[] = [
-    `🍽️ *${restaurant}*`,
-    `━━━━━━━━━━━━━━━━━━━━`,
-    `🎫 *Order #${order.orderNumber}*`,
-    `📅 ${date}`,
-    `🍴 ${typeLabel2}${order.tableName ? ` — Table ${order.tableName}` : ''}`,
-    order.customerName ? `👤 ${order.customerName}` : '',
-    `━━━━━━━━━━━━━━━━━━━━`,
-    `*Items:*`,
-    itemLines,
-    `━━━━━━━━━━━━━━━━━━━━`,
-    `Subtotal:  ${fmt(order.subtotal)}`,
-    `Tax (${order.taxRate}%): ${fmt(order.taxAmount)}`,
-    order.discountAmount > 0 ? `Discount:  -${fmt(order.discountAmount)}` : '',
-    `*Total:    ${fmt(order.totalAmount)}*`,
-    `━━━━━━━━━━━━━━━━━━━━`,
-    `_Thank you for dining with us! 🙏_`,
-    `_Please visit again ❤️_`,
-  ].filter(Boolean);
+  // Filter active items
+  const activeItems = (order.items || []).filter(i => i && i.status !== 'CANCELLED');
 
-  const text = encodeURIComponent(lines.join('\n'));
-  window.open(`https://wa.me/${num.replace('+', '')}?text=${text}`, '_blank', 'noopener,noreferrer');
+  // Financial calculations with safe defaults
+  const subtotal = Number(order.subtotal) != null && !isNaN(Number(order.subtotal))
+    ? Number(order.subtotal)
+    : activeItems.reduce((acc, it) => acc + (Number(it.totalPrice) || 0), 0);
+
+  const taxAmount = Number(order.taxAmount) != null && !isNaN(Number(order.taxAmount))
+    ? Number(order.taxAmount)
+    : 0;
+
+  const taxRate = order.taxRate != null && !isNaN(Number(order.taxRate))
+    ? Number(order.taxRate)
+    : (subtotal > 0 && taxAmount > 0 ? Math.round((taxAmount / subtotal) * 100) : (savedSettings.taxRate ?? 5));
+
+  const discountAmount = Number(order.discountAmount) || 0;
+  const extraCharges = Number(order.extraCharges) || 0;
+  const tipAmount = Number(payment?.tip) || 0;
+  const totalAmount = Number(order.totalAmount) != null && !isNaN(Number(order.totalAmount))
+    ? Number(order.totalAmount)
+    : (subtotal + taxAmount + extraCharges - discountAmount);
+
+  const grandFinal = (payment?.amount != null && !isNaN(Number(payment.amount)))
+    ? Number(payment.amount)
+    : totalAmount;
+
+  // Receipt formatting matching the on-screen simulated receipt
+  const w = 32;
+  const sep = '-'.repeat(w);
+  const dsep = '='.repeat(w);
+
+  const center = (s: string) => {
+    const pad = Math.max(0, Math.floor((w - s.length) / 2));
+    return ' '.repeat(pad) + s;
+  };
+
+  const lr = (left: string, right: string) => {
+    const spaces = Math.max(1, w - left.length - right.length);
+    return left + ' '.repeat(spaces) + right;
+  };
+
+  const receiptLines: string[] = [];
+  receiptLines.push(dsep);
+  receiptLines.push(center(restaurant.toUpperCase()));
+  if (address) receiptLines.push(center(address));
+  if (phoneContact) receiptLines.push(center(`Tel: ${phoneContact}`));
+  receiptLines.push(sep);
+
+  receiptLines.push(lr(`Order #${order.orderNumber}`, timeStr || ''));
+  receiptLines.push(lr(dateStr, typeLabelStr));
+  if (tableName || serverName) {
+    const left = tableName ? `Table: ${tableName}` : '';
+    const right = serverName ? `Server: ${serverName}` : '';
+    receiptLines.push(lr(left, right));
+  }
+  if (customerName) {
+    receiptLines.push(lr('Customer:', customerName));
+  }
+  receiptLines.push(sep);
+  receiptLines.push(lr('ITEM', 'QTY       AMT'));
+  receiptLines.push(sep);
+
+  for (const item of activeItems) {
+    const name = item.menuItemName || (item as any).menuItem?.name || (item as any).name || 'Dish Item';
+    const qty = Number(item.quantity) || 1;
+    const lineTotal = Number(item.totalPrice) != null && !isNaN(Number(item.totalPrice))
+      ? Number(item.totalPrice)
+      : (Number(item.unitPrice) || 0) * qty;
+
+    const qtyAmt = `x${qty}  ${fmt(lineTotal)}`;
+    if (name.length + qtyAmt.length + 1 <= w) {
+      receiptLines.push(lr(name, qtyAmt));
+    } else {
+      receiptLines.push(name);
+      receiptLines.push(lr('', qtyAmt));
+    }
+    if (item.note) {
+      receiptLines.push(` (${item.note})`);
+    }
+  }
+
+  receiptLines.push(sep);
+  receiptLines.push(lr('Subtotal', fmt(subtotal)));
+  receiptLines.push(lr(`Tax (${taxRate}%)`, fmt(taxAmount)));
+
+  if (order.extraChargesDetail && Array.isArray(order.extraChargesDetail) && order.extraChargesDetail.length > 0) {
+    for (const ec of order.extraChargesDetail) {
+      receiptLines.push(lr(ec.label || 'Extra Charge', fmt(ec.amount)));
+    }
+  } else if (extraCharges > 0) {
+    receiptLines.push(lr('Extra Charges', fmt(extraCharges)));
+  }
+
+  if (discountAmount > 0) {
+    receiptLines.push(lr('Discount', `-${fmt(discountAmount)}`));
+  }
+  if (tipAmount > 0) {
+    receiptLines.push(lr('Tip', fmt(tipAmount)));
+  }
+
+  receiptLines.push(dsep);
+  receiptLines.push(lr('TOTAL', fmt(grandFinal)));
+  receiptLines.push(dsep);
+
+  const payMethod = payment?.method || (order as any).payment?.method || null;
+  const payStatus = payment?.status || (order as any).payment?.status || (order.status === 'COMPLETED' ? 'COMPLETED' : null);
+
+  if (payMethod || payStatus) {
+    receiptLines.push(lr(`Method: ${payMethod || 'UPI'}`, payStatus || 'PAID'));
+    if (payment?.change && Number(payment.change) > 0) {
+      receiptLines.push(lr('Change Returned', fmt(payment.change)));
+    }
+    if (payment?.reference) {
+      receiptLines.push(lr('Ref:', String(payment.reference).slice(0, 18)));
+    }
+    receiptLines.push(sep);
+  }
+
+  receiptLines.push(center('Thank you for dining with us!'));
+  receiptLines.push(center('Please visit again ❤️'));
+  receiptLines.push(center('Powered by RestoPOS'));
+  receiptLines.push(dsep);
+
+  const fullMessage = [
+    `🧾 *TAX RECEIPT — #${order.orderNumber}*`,
+    `*${restaurant}*`,
+    '```',
+    receiptLines.join('\n'),
+    '```',
+  ].join('\n');
+
+  const encodedText = encodeURIComponent(fullMessage);
+  const waUrl = num ? `https://wa.me/${num}?text=${encodedText}` : `https://wa.me/?text=${encodedText}`;
+
+  await openExternalUrl(waUrl);
 }

@@ -6,6 +6,7 @@ import { connectSocket, disconnectSocket } from './lib/socket';
 import { isTauri, getLicenseInfo, LicenseVerifyResult } from './lib/tauri';
 import { LicenseActivationScreen } from './components/LicenseActivationScreen';
 import StartupScreen from './components/StartupScreen';
+import ExitConfirmModal from './components/ExitConfirmModal';
 
 // Pages
 import LoginPage from './pages/LoginPage';
@@ -133,7 +134,9 @@ function App() {
   }
 
   return (
-    <Routes>
+    <>
+      <ExitConfirmModal />
+      <Routes>
       <Route path="/login" element={<LoginPage />} />
       {/* Public Customer Self-Ordering Kiosk (KFC / McDonald's style) */}
       <Route path="/kiosk" element={<KioskPage />} />
@@ -193,6 +196,7 @@ function App() {
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </>
   );
 }
 

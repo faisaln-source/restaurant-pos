@@ -2,7 +2,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Bell, Clock, Plus, Menu, LayoutDashboard, ShoppingCart,
   TableProperties, UtensilsCrossed, Monitor, Users, BarChart3, Settings,
-  Sun, Moon,
+  Sun, Moon, Power,
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
@@ -183,6 +183,18 @@ export default function Header() {
             </div>
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {/* Exit POS / App Button */}
+        <Button
+          variant="ghost"
+          size="icon"
+          title="Exit POS Application"
+          aria-label="Exit POS Application"
+          onClick={() => window.dispatchEvent(new CustomEvent('app:request-exit'))}
+          className="h-8 w-8 rounded-full text-muted-foreground hover:text-rose-500 hover:bg-rose-500/10 transition-colors"
+        >
+          <Power size={15} />
+        </Button>
       </div>
     </header>
   );

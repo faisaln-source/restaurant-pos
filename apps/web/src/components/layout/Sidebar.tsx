@@ -2,7 +2,7 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, ShoppingCart, UtensilsCrossed, TableProperties,
   Monitor, Users, BarChart3, Settings, LogOut, ChefHat, User, Sparkles, MoreVertical,
-  Sun, Moon,
+  Sun, Moon, Power,
 } from 'lucide-react';
 import { logout } from '@/services/auth.service';
 import { useAuthStore } from '@/store/authStore';
@@ -181,6 +181,14 @@ export function SidebarContent({
             <DropdownMenuItem onClick={handleLogout} className="cursor-pointer text-destructive focus:text-destructive focus:bg-destructive/10">
               <LogOut className="mr-2 h-4 w-4" />
               <span>Log out</span>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onClick={() => window.dispatchEvent(new CustomEvent('app:request-exit'))}
+              className="cursor-pointer text-rose-500 hover:text-rose-600 focus:text-rose-500 focus:bg-rose-500/10 font-medium"
+            >
+              <Power className="mr-2 h-4 w-4" />
+              <span>Exit POS</span>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

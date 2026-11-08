@@ -7,7 +7,7 @@ mod commands;
 mod postgres;
 
 /// Holds the spawned API sidecar so we can kill it on exit.
-struct ApiProcess(Mutex<Option<tauri_plugin_shell::process::CommandChild>>);
+pub(crate) struct ApiProcess(pub(crate) Mutex<Option<tauri_plugin_shell::process::CommandChild>>);
 
 // ── Setup phases emitted to the React frontend ────────────────────────────
 // The web app listens for "setup:progress" and "setup:done" / "setup:error".
@@ -30,6 +30,8 @@ pub fn run() {
             commands::save_license_key,
             commands::get_license_info,
             commands::get_app_data_dir,
+            commands::open_external_url,
+            commands::exit_app,
         ])
         .setup(|app| {
             // ── Open devtools in debug builds ──────────────────────────────
@@ -177,30 +179,38 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::Destroyed = event {
-                let app = window.app_handle();
-                if app.webview_windows().is_empty() {
-                    // Kill API sidecar
-                    let state = app.state::<ApiProcess>();
-                    let child = state.0.lock().ok().and_then(|mut g| g.take());
-                    if let Some(c) = child {
-                        eprintln!("[tauri] Killing API sidecar");
-                        let _ = c.kill();
-                    }
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    // Intercept window close button (X) and Alt+F4 to confirm exit
+                    api.prevent_close();
+                    let _ = window.emit("request-app-exit", ());
+                }
+                tauri::WindowEvent::Destroyed => {
+                    let app = window.app_handle();
+                    if app.webview_windows().is_empty() {
+                        // Kill API sidecar
+                        let state = app.state::<ApiProcess>();
+                        let child = state.0.lock().ok().and_then(|mut g| g.take());
+                        if let Some(c) = child {
+                            eprintln!("[tauri] Killing API sidecar");
+                            let _ = c.kill();
+                        }
 
-                    // Stop embedded PostgreSQL if it was started
-                    // We re-create the manager from known paths to call stop()
-                    // (best-effort: if paths are unavailable, postgres auto-exits anyway)
-                    if let (Ok(res), Ok(data)) = (
-                        app.path().resource_dir(),
-                        app.path().app_data_dir(),
-                    ) {
-                        let pg = postgres::PostgresManager::new(&res, &data);
-                        if pg.is_running() {
-                            pg.stop();
+                        // Stop embedded PostgreSQL if it was started
+                        // We re-create the manager from known paths to call stop()
+                        // (best-effort: if paths are unavailable, postgres auto-exits anyway)
+                        if let (Ok(res), Ok(data)) = (
+                            app.path().resource_dir(),
+                            app.path().app_data_dir(),
+                        ) {
+                            let pg = postgres::PostgresManager::new(&res, &data);
+                            if pg.is_running() {
+                                pg.stop();
+                            }
                         }
                     }
                 }
+                _ => {}
             }
         })
         .run(tauri::generate_context!())

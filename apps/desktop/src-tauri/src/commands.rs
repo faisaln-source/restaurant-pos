@@ -117,3 +117,55 @@ pub fn save_license_key(app: AppHandle, key: String) -> Result<VerifyResult, Str
 pub fn get_app_data_dir(app: AppHandle) -> String {
     app_data_dir(&app).to_string_lossy().to_string()
 }
+
+/// Open an external URL in the default browser or OS handler (e.g. WhatsApp, web links).
+#[tauri::command]
+pub fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
+    eprintln!("[tauri] Opening external URL: {url}");
+
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows, rundll32 invokes ShellExecute directly, avoiding cmd argument escaping issues
+        if let Ok(_) = std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", &url])
+            .spawn()
+        {
+            return Ok(());
+        }
+    }
+
+    use tauri_plugin_shell::ShellExt;
+    if let Err(e) = app.shell().open(&url, None) {
+        eprintln!("[tauri] shell.open fallback failed: {e}");
+    }
+    Ok(())
+}
+
+/// Explicitly shutdown and exit the application after user confirms.
+#[tauri::command]
+pub fn exit_app(app: AppHandle) {
+    eprintln!("[tauri] User confirmed exit — shutting down cleanly");
+
+    // 1. Kill API sidecar child process
+    let state = app.state::<crate::ApiProcess>();
+    let child = state.0.lock().ok().and_then(|mut g| g.take());
+    if let Some(c) = child {
+        eprintln!("[tauri] Killing API sidecar process");
+        let _ = c.kill();
+    }
+
+    // 2. Stop embedded PostgreSQL cleanly so postmaster.pid is removed
+    if let (Ok(res), Ok(data)) = (
+        app.path().resource_dir(),
+        app.path().app_data_dir(),
+    ) {
+        let pg = crate::postgres::PostgresManager::new(&res, &data);
+        if pg.is_running() {
+            eprintln!("[tauri] Stopping embedded PostgreSQL");
+            pg.stop();
+        }
+    }
+
+    // 3. Exit process
+    app.exit(0);
+}

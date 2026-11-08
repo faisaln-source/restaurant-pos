@@ -21,10 +21,19 @@ export default function ReceiptModal({ order, payment, onClose }: Props) {
   const [phoneInput, setPhoneInput] = useState(false);
   const [phone, setPhone] = useState('');
 
-  const handleShare = () => {
+  const savedSettings = (() => {
+    try {
+      const s = localStorage.getItem('pos_settings');
+      return s ? JSON.parse(s) : {};
+    } catch { return {}; }
+  })();
+  const restName = savedSettings.restaurantName || 'RestoPOS';
+  const restAddress = savedSettings.address || 'Restaurant & Bar';
+  const restPhone = savedSettings.phone || '';
+
+  const handleShare = async () => {
     if (!phoneInput) { setPhoneInput(true); return; }
-    if (!phone.trim()) { setPhoneInput(false); return; }
-    shareOrderOnWhatsApp(order, phone.trim());
+    await shareOrderOnWhatsApp(order, phone.trim(), restName, payment);
     setPhoneInput(false);
     setPhone('');
   };
@@ -338,9 +347,9 @@ export default function ReceiptModal({ order, payment, onClose }: Props) {
           >
             {/* Header */}
             <div className="text-center space-y-0.5">
-              <h3 className="text-base font-black tracking-widest uppercase">RESTRO POS</h3>
-              <p className="text-[11px] text-muted-foreground">Restaurant & Bar</p>
-              <p className="text-[10px] text-muted-foreground">123 Food Street, City • +91 98765 43210</p>
+              <h3 className="text-base font-black tracking-widest uppercase">{restName}</h3>
+              <p className="text-[11px] text-muted-foreground">{restAddress}</p>
+              {restPhone && <p className="text-[10px] text-muted-foreground">Tel: {restPhone}</p>}
             </div>
 
             <Separator className="border-dashed" />

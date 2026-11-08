@@ -128,12 +128,22 @@ export default function PaymentModal({ order, onClose, onSuccess, overrideAmount
                 <Input
                   autoFocus
                   type="tel"
-                  placeholder="Customer WhatsApp number (e.g. 9876543210)"
+                  placeholder="Customer WhatsApp number (optional, e.g. 9876543210)"
                   value={sharePhone}
                   onChange={e => setSharePhone(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && sharePhone.trim()) {
-                      shareOrderOnWhatsApp(order, sharePhone.trim());
+                  onKeyDown={async e => {
+                    if (e.key === 'Enter') {
+                      const p = {
+                        id: paymentId,
+                        orderId: order.id,
+                        orderNumber: order.orderNumber,
+                        amount: grandTotal,
+                        method: 'UPI' as const,
+                        status: 'COMPLETED' as const,
+                        tip: tipAmount,
+                        createdAt: new Date().toISOString(),
+                      };
+                      await shareOrderOnWhatsApp(order, sharePhone.trim(), undefined, p);
                       setShowShare(false); setSharePhone('');
                     }
                     if (e.key === 'Escape') { setShowShare(false); setSharePhone(''); }
@@ -142,12 +152,20 @@ export default function PaymentModal({ order, onClose, onSuccess, overrideAmount
                 />
                 <Button
                   size="sm"
-                  className="h-9 px-3 bg-[#25D366] hover:bg-[#1ebe5d] text-white font-bold"
-                  onClick={() => {
-                    if (sharePhone.trim()) {
-                      shareOrderOnWhatsApp(order, sharePhone.trim());
-                      setShowShare(false); setSharePhone('');
-                    }
+                  className="h-9 px-3 bg-[#25D366] hover:bg-[#1ebe5d] text-white font-bold cursor-pointer"
+                  onClick={async () => {
+                    const p = {
+                      id: paymentId,
+                      orderId: order.id,
+                      orderNumber: order.orderNumber,
+                      amount: grandTotal,
+                      method: 'UPI' as const,
+                      status: 'COMPLETED' as const,
+                      tip: tipAmount,
+                      createdAt: new Date().toISOString(),
+                    };
+                    await shareOrderOnWhatsApp(order, sharePhone.trim(), undefined, p);
+                    setShowShare(false); setSharePhone('');
                   }}
                 >
                   <MessageCircle className="w-4 h-4" />
@@ -155,7 +173,7 @@ export default function PaymentModal({ order, onClose, onSuccess, overrideAmount
                 <Button
                   size="sm"
                   variant="ghost"
-                  className="h-9 px-2 text-zinc-400 hover:text-white"
+                  className="h-9 px-2 text-zinc-400 hover:text-white cursor-pointer"
                   onClick={() => { setShowShare(false); setSharePhone(''); }}
                 >
                   ✕
